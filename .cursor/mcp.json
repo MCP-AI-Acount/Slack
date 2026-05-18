@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "slack-thread": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "MCP_Server/slack_thread_server.py"
+      ],
+      "env": {
+        "SLACK_BOT_TOKEN": "${env:SLACK_BOT_TOKEN}",
+        "SLACK_THREAD_STORE": "temp/slack_threads.json"
+      }
+    }
+  }
+}
