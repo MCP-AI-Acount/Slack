@@ -16,6 +16,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from common.output_delivery import DeliveryError, deliver_image_output
+
 
 LOGGER = logging.getLogger("slack_n8n_gateway")
 SIGNATURE_TOLERANCE_SECONDS = 60 * 5
@@ -164,6 +166,24 @@ class SlackN8nGatewayHandler(BaseHTTPRequestHandler):
         self.write_json(HTTPStatus.OK, {"ok": True})
 
     def do_POST(self) -> None:
+        if self.path == "/outputs/image":
+            try:
+                status, payload = self.handle_output_image()
+            except ConfigError as exc:
+                LOGGER.error("configuration error: %s", exc)
+                status = HTTPStatus.INTERNAL_SERVER_ERROR
+                payload = {"ok": False, "error": "configuration_error"}
+            except DeliveryError as exc:
+                LOGGER.warning("output delivery error: %s", exc)
+                status = HTTPStatus.BAD_REQUEST
+                payload = {"ok": False, "error": str(exc)}
+            except Exception:
+                LOGGER.exception("unexpected output handling error")
+                status = HTTPStatus.INTERNAL_SERVER_ERROR
+                payload = {"ok": False, "error": "output_gateway_error"}
+            self.write_json(status, payload)
+            return
+
         if self.path != "/slack/command":
             self.write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
@@ -214,6 +234,56 @@ class SlackN8nGatewayHandler(BaseHTTPRequestHandler):
 
         ack_text = os.getenv("SLACK_ACK_TEXT", "Command received. n8n will continue processing it.")
         return slack_response(ack_text)
+
+    def handle_output_image(self) -> tuple[int, dict[str, Any]]:
+        if not self.verify_output_gateway_secret():
+            return HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"}
+
+        payload = self.read_json_body()
+        image_payload = payload.get("image_base64") or payload.get("image_data_url")
+        if not isinstance(image_payload, str):
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "image_base64 or image_data_url is required"}
+
+        metadata = payload.get("metadata")
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "metadata must be an object"}
+
+        result = deliver_image_output(
+            image_payload,
+            filename=payload.get("filename"),
+            content_type=payload.get("content_type"),
+            title=payload.get("task_title") or payload.get("title") or "Image output",
+            task_id=payload.get("task_id"),
+            metadata=metadata,
+        )
+        return HTTPStatus.OK, result
+
+    def verify_output_gateway_secret(self) -> bool:
+        if env_bool("ALLOW_UNSIGNED_OUTPUT_REQUESTS", False):
+            return True
+
+        expected = os.getenv("OUTPUT_GATEWAY_SHARED_SECRET")
+        if not expected:
+            raise ConfigError("OUTPUT_GATEWAY_SHARED_SECRET is required")
+
+        provided = self.headers.get("X-Output-Gateway-Secret", "")
+        authorization = self.headers.get("Authorization", "")
+        if not provided and authorization.lower().startswith("bearer "):
+            provided = authorization[7:].strip()
+
+        return hmac.compare_digest(expected, provided)
+
+    def read_json_body(self) -> dict[str, Any]:
+        body = self.read_body()
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise DeliveryError("request body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise DeliveryError("request body must be a JSON object")
+        return payload
 
     def read_body(self) -> bytes:
         content_length = int(self.headers.get("Content-Length", "0"))
