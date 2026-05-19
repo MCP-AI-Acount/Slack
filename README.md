@@ -77,7 +77,7 @@ The forwarded JSON shape is:
 ```bash
 export SLACK_SIGNING_SECRET="..."
 export N8N_WEBHOOK_URL="https://n8n.example.com/webhook/slack-command"
-python -m common.slack_n8n_gateway
+python3 -m common.slack_n8n_gateway
 ```
 
 Health check:
