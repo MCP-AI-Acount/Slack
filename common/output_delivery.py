@@ -81,15 +81,17 @@ def safe_filename(filename: str | None, content_type: str | None = None) -> str:
     if not candidate:
         candidate = f"image-{uuid.uuid4().hex}"
 
-    candidate = SAFE_FILENAME_PATTERN.sub("-", candidate).strip(".-")
-    if not candidate:
-        candidate = f"image-{uuid.uuid4().hex}"
+    stem, extension = os.path.splitext(candidate)
+    stem = SAFE_FILENAME_PATTERN.sub("-", stem).strip(".-")
+    if not stem:
+        stem = f"image-{uuid.uuid4().hex}"
 
-    if "." not in candidate:
+    if not extension:
         extension = mimetypes.guess_extension(content_type or "") or ".bin"
-        candidate = f"{candidate}{extension}"
+    elif not re.fullmatch(r"\.[A-Za-z0-9]+", extension):
+        extension = mimetypes.guess_extension(content_type or "") or ".bin"
 
-    return candidate[:180]
+    return f"{stem}{extension}"[:180]
 
 
 def build_image_object_name(
