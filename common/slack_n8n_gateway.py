@@ -117,6 +117,23 @@ def slack_form_to_payload(form: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def optional_text(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def output_slack_response_url(payload: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    for key in ("slack_response_url", "response_url"):
+        value = optional_text(payload.get(key))
+        if value:
+            return value
+        value = optional_text(metadata.get(key))
+        if value:
+            return value
+    return None
+
+
 def post_json(
     url: str,
     payload: dict[str, Any],
@@ -257,6 +274,9 @@ class SlackN8nGatewayHandler(BaseHTTPRequestHandler):
             title=payload.get("task_title") or payload.get("title") or "Image output",
             task_id=payload.get("task_id"),
             metadata=metadata,
+            slack_response_url=output_slack_response_url(payload, metadata),
+            slack_text=optional_text(payload.get("slack_text")),
+            slack_response_type=optional_text(payload.get("slack_response_type")) or "ephemeral",
         )
         return HTTPStatus.OK, result
 

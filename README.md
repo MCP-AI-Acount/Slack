@@ -46,6 +46,8 @@ Optional environment variables:
 - `PROGRESS_SHARED_SECRET`: sent to the progress webhook as `X-Progress-Secret`.
 - `PROGRESS_AUTHORIZATION`: sent to the progress webhook as `Authorization`.
 - `PROGRESS_TIMEOUT_SECONDS`: progress webhook timeout. Default: `5.0`.
+- `SLACK_RESPONSE_TIMEOUT_SECONDS`: timeout for posting final output links to
+  Slack `response_url` values. Default: `5.0`.
 - `ALLOW_UNSIGNED_OUTPUT_REQUESTS`: set to `true` only for local testing.
 
 Do not commit real secret values. Put local secret files under `Core/` or use
@@ -111,6 +113,8 @@ Body:
   "filename": "card-news.png",
   "content_type": "image/png",
   "image_base64": "BASE64_IMAGE_BYTES",
+  "slack_response_url": "https://hooks.slack.com/commands/...",
+  "slack_text": "Cartoon completed: https://cdn.example.com/Output/Image/card-news.png",
   "metadata": {
     "source": "slack",
     "command": "/cursor"
@@ -120,11 +124,14 @@ Body:
 
 The gateway creates folder marker objects for `Output/` and `Output/Image/` if
 they do not exist, uploads the image as an object under `Output/Image/`, and
-returns JSON containing `output.link`. Google Cloud Storage folders are object
-prefixes; the marker objects make the prefixes visible in console-style UIs.
+returns JSON containing `output.link`. If `slack_response_url` is supplied, the
+gateway posts the final link back to the originating Slack command response URL
+after upload. Google Cloud Storage folders are object prefixes; the marker
+objects make the prefixes visible in console-style UIs.
 
 If `PROGRESS_WEBHOOK_URL` is configured, the gateway also posts this payload to
-your progress website:
+your progress website. Progress and Slack response webhook failures are returned
+in the JSON response but do not undo a successful image upload:
 
 ```json
 {
