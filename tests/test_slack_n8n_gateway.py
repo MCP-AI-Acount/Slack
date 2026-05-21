@@ -5,6 +5,7 @@ import unittest
 import urllib.parse
 
 from common.slack_n8n_gateway import (
+    output_slack_response_url,
     parse_slack_form,
     slack_form_to_payload,
     verify_slack_signature,
@@ -75,6 +76,22 @@ class SlackN8nGatewayTests(unittest.TestCase):
         self.assertEqual(payload["slack"]["command"], "/cursor")
         self.assertEqual(payload["slack"]["text"], "make canva")
         self.assertNotIn("token", payload["slack"]["raw"])
+
+    def test_output_slack_response_url_accepts_payload_or_metadata(self):
+        self.assertEqual(
+            output_slack_response_url(
+                {"slack_response_url": "https://hooks.slack.com/commands/T/B/X"},
+                {},
+            ),
+            "https://hooks.slack.com/commands/T/B/X",
+        )
+        self.assertEqual(
+            output_slack_response_url(
+                {},
+                {"response_url": "https://hooks.slack.com/commands/T/B/Y"},
+            ),
+            "https://hooks.slack.com/commands/T/B/Y",
+        )
 
 
 if __name__ == "__main__":

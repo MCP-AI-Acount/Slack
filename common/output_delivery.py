@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -25,6 +26,14 @@ DEFAULT_OUTPUT_PREFIX = "Output"
 DEFAULT_IMAGE_PREFIX = "Image"
 DATA_URL_PATTERN = re.compile(r"^data:(?P<content_type>[-\w.+/]+);base64,(?P<data>.*)$", re.DOTALL)
 SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+SENSITIVE_METADATA_KEYS = {
+    "authorization",
+    "password",
+    "response_url",
+    "secret",
+    "slack_response_url",
+    "token",
+}
 
 
 class DeliveryError(RuntimeError):
@@ -41,6 +50,7 @@ class OutputDeliveryConfig:
     progress_shared_secret: str | None = None
     progress_authorization: str | None = None
     progress_timeout_seconds: float = 5.0
+    slack_response_timeout_seconds: float = 5.0
 
     @classmethod
     def from_env(cls) -> "OutputDeliveryConfig":
@@ -57,6 +67,7 @@ class OutputDeliveryConfig:
             progress_shared_secret=os.getenv("PROGRESS_SHARED_SECRET"),
             progress_authorization=os.getenv("PROGRESS_AUTHORIZATION"),
             progress_timeout_seconds=float(os.getenv("PROGRESS_TIMEOUT_SECONDS", "5.0")),
+            slack_response_timeout_seconds=float(os.getenv("SLACK_RESPONSE_TIMEOUT_SECONDS", "5.0")),
         )
 
 
@@ -185,6 +196,16 @@ def upload_image_bytes(
     )
 
 
+def public_metadata(metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key.lower() not in SENSITIVE_METADATA_KEYS
+    }
+
+
 def progress_payload(
     uploaded_output: UploadedOutput,
     *,
@@ -212,6 +233,36 @@ def progress_payload(
     }
 
 
+def post_webhook_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    headers: dict[str, str] | None = None,
+    timeout_seconds: float = 5.0,
+) -> tuple[int, str]:
+    body = json.dumps(payload).encode("utf-8")
+    request_headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "slack-output-delivery/1.0",
+    }
+    if headers:
+        request_headers.update(headers)
+
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=request_headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        return 0, f"request_failed: {exc}"
+
+
 def post_progress_completed(
     uploaded_output: UploadedOutput,
     *,
@@ -224,34 +275,75 @@ def post_progress_completed(
     if not config.progress_webhook_url:
         return None
 
-    body = json.dumps(
-        progress_payload(
-            uploaded_output,
-            title=title,
-            task_id=task_id,
-            metadata=metadata,
-        )
-    ).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "slack-output-delivery/1.0",
-    }
+    headers = {}
     if config.progress_shared_secret:
         headers["X-Progress-Secret"] = config.progress_shared_secret
     if config.progress_authorization:
         headers["Authorization"] = config.progress_authorization
 
-    request = urllib.request.Request(
+    return post_webhook_json(
         config.progress_webhook_url,
-        data=body,
+        progress_payload(
+            uploaded_output,
+            title=title,
+            task_id=task_id,
+            metadata=metadata,
+        ),
         headers=headers,
-        method="POST",
+        timeout_seconds=config.progress_timeout_seconds,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=config.progress_timeout_seconds) as response:
-            return response.status, response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", errors="replace")
+
+
+def is_slack_response_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == "hooks.slack.com"
+        and parsed.path.startswith("/commands/")
+    )
+
+
+def slack_completion_payload(
+    uploaded_output: UploadedOutput,
+    *,
+    title: str,
+    text: str | None = None,
+    response_type: str = "ephemeral",
+) -> dict[str, Any]:
+    safe_response_type = response_type if response_type in {"ephemeral", "in_channel"} else "ephemeral"
+    message = text or f"{title} completed: {uploaded_output.link}"
+    return {
+        "response_type": safe_response_type,
+        "replace_original": False,
+        "text": message,
+    }
+
+
+def post_slack_response(
+    slack_response_url: str | None,
+    uploaded_output: UploadedOutput,
+    *,
+    title: str,
+    text: str | None = None,
+    response_type: str = "ephemeral",
+    config: OutputDeliveryConfig | None = None,
+) -> tuple[int, str] | None:
+    if not slack_response_url:
+        return None
+    if not is_slack_response_url(slack_response_url):
+        return 0, "invalid_slack_response_url"
+
+    config = config or OutputDeliveryConfig.from_env()
+    return post_webhook_json(
+        slack_response_url,
+        slack_completion_payload(
+            uploaded_output,
+            title=title,
+            text=text,
+            response_type=response_type,
+        ),
+        timeout_seconds=config.slack_response_timeout_seconds,
+    )
 
 
 def deliver_image_output(
@@ -262,11 +354,15 @@ def deliver_image_output(
     title: str = "Image output",
     task_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    slack_response_url: str | None = None,
+    slack_text: str | None = None,
+    slack_response_type: str = "ephemeral",
     config: OutputDeliveryConfig | None = None,
 ) -> dict[str, Any]:
     config = config or OutputDeliveryConfig.from_env()
     image_bytes, detected_content_type = decode_image_payload(image_payload, content_type)
-    upload_metadata = {key: str(value) for key, value in (metadata or {}).items()}
+    safe_metadata = public_metadata(metadata)
+    upload_metadata = {key: str(value) for key, value in safe_metadata.items()}
     uploaded_output = upload_image_bytes(
         image_bytes,
         filename=filename,
@@ -279,7 +375,15 @@ def deliver_image_output(
         uploaded_output,
         title=title,
         task_id=task_id,
-        metadata=metadata,
+        metadata=safe_metadata,
+        config=config,
+    )
+    slack_result = post_slack_response(
+        slack_response_url,
+        uploaded_output,
+        title=title,
+        text=slack_text,
+        response_type=slack_response_type,
         config=config,
     )
     return {
@@ -289,6 +393,11 @@ def deliver_image_output(
             "notified": progress_result is not None,
             "status": progress_result[0] if progress_result else None,
             "body": progress_result[1] if progress_result else None,
+        },
+        "slack_response": {
+            "notified": slack_result is not None,
+            "status": slack_result[0] if slack_result else None,
+            "body": slack_result[1] if slack_result else None,
         },
     }
 
