@@ -162,6 +162,20 @@ python3 -m common.output_delivery \
   --task-id "slack-20260519-001"
 ```
 
+## n8n sync (verify / card-news backfill)
+
+Use `scripts/sync_n8n.py` when scheduled card news did not run. This POSTs to
+`N8N_WEBHOOK_URL` (or `N8N_CARD_NEWS_WEBHOOK_URL`) so n8n can republish missed
+items for `#자동화_날씨7경제5`.
+
+```bash
+export N8N_WEBHOOK_URL="https://n8n.example.com/webhook/slack-command"
+python3 scripts/sync_n8n.py verify
+python3 scripts/sync_n8n.py backfill --hours 1
+```
+
+See `docs/card-news-n8n-reconnect.md` for the full reconnect checklist.
+
 ## Run locally
 
 ```bash
