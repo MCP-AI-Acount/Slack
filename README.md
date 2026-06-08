@@ -172,9 +172,10 @@ items for `#자동화_날씨7경제5`.
 export N8N_WEBHOOK_URL="https://n8n.example.com/webhook/slack-command"
 python3 scripts/sync_n8n.py verify
 python3 scripts/sync_n8n.py backfill --hours 1
+python3 scripts/sync_n8n.py catchup --hours 24
 ```
 
-See `docs/card-news-n8n-reconnect.md` for the full reconnect checklist.
+See `docs/card-news-n8n-reconnect.md` and `docs/vm-downtime-recovery.md` for the full reconnect checklist.
 
 ## Run locally
 

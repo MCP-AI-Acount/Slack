@@ -17,6 +17,7 @@ from common.slack_n8n_gateway import post_json  # noqa: E402
 
 
 DEFAULT_CARD_NEWS_CHANNEL_ID = "C0B4JUZPX2L"
+VALID_CATCHUP_SCHEDULES = frozenset({"regular", "monday_weekly", "daily"})
 
 
 def required_env(name: str) -> str:
@@ -30,9 +31,22 @@ def webhook_url() -> str:
     return os.getenv("N8N_CARD_NEWS_WEBHOOK_URL") or required_env("N8N_WEBHOOK_URL")
 
 
+def resolve_channel_id(channel_id: str | None) -> str:
+    return (channel_id or os.getenv("SLACK_CARD_NEWS_CHANNEL_ID") or DEFAULT_CARD_NEWS_CHANNEL_ID).strip()
+
+
+def slack_context(*, channel_id: str, text: str) -> dict[str, str]:
+    return {
+        "channel_id": channel_id,
+        "channel_name": os.getenv("SLACK_CARD_NEWS_CHANNEL_NAME", "자동화_날씨7경제5"),
+        "command": os.getenv("SLACK_CARD_NEWS_COMMAND", "/cursor"),
+        "text": text,
+    }
+
+
 def build_backfill_payload(hours: float, *, channel_id: str | None) -> dict[str, Any]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    channel = (channel_id or os.getenv("SLACK_CARD_NEWS_CHANNEL_ID") or DEFAULT_CARD_NEWS_CHANNEL_ID).strip()
+    channel = resolve_channel_id(channel_id)
     return {
         "source": "cursor",
         "gateway": "sync-n8n",
@@ -42,12 +56,46 @@ def build_backfill_payload(hours: float, *, channel_id: str | None) -> dict[str,
             "hours": hours,
             "since": since.isoformat(),
         },
-        "slack": {
-            "channel_id": channel,
-            "channel_name": os.getenv("SLACK_CARD_NEWS_CHANNEL_NAME", "자동화_날씨7경제5"),
-            "command": os.getenv("SLACK_CARD_NEWS_COMMAND", "/cursor"),
-            "text": f"card news backfill last {hours:g}h",
+        "slack": slack_context(channel_id=channel, text=f"card news backfill last {hours:g}h"),
+    }
+
+
+def parse_catchup_schedules(raw: str | None) -> list[str]:
+    if not raw or not raw.strip():
+        return ["regular", "monday_weekly"]
+    schedules = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    unknown = sorted(set(schedules) - VALID_CATCHUP_SCHEDULES)
+    if unknown:
+        allowed = ", ".join(sorted(VALID_CATCHUP_SCHEDULES))
+        raise SystemExit(f"Unknown schedule(s): {', '.join(unknown)}. Allowed: {allowed}")
+    return schedules
+
+
+def build_catchup_payload(
+    hours: float,
+    *,
+    channel_id: str | None,
+    skip_already_posted: bool,
+    schedules: list[str],
+) -> dict[str, Any]:
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    channel = resolve_channel_id(channel_id)
+    schedule_label = "+".join(schedules)
+    return {
+        "source": "cursor",
+        "gateway": "sync-n8n",
+        "action": "card_news_catchup",
+        "received_at": int(time.time()),
+        "catchup": {
+            "hours": hours,
+            "since": since.isoformat(),
+            "skip_already_posted": skip_already_posted,
+            "schedules": schedules,
         },
+        "slack": slack_context(
+            channel_id=channel,
+            text=f"card news catchup {schedule_label} skip_posted={skip_already_posted} last {hours:g}h",
+        ),
     }
 
 
@@ -77,10 +125,9 @@ def cmd_verify(_: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_backfill(args: argparse.Namespace) -> int:
+def post_action_payload(payload: dict[str, Any], *, ok_message: str, fail_message: str) -> int:
     url = webhook_url()
     timeout = float(os.getenv("N8N_FORWARD_TIMEOUT_SECONDS", "30"))
-    payload = build_backfill_payload(args.hours, channel_id=args.channel_id)
     status, body = post_json(
         url,
         payload,
@@ -89,14 +136,43 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         timeout_seconds=timeout,
     )
     print(f"n8n webhook: {url}")
-    print(f"payload action: {payload['action']}, since: {payload['backfill']['since']}")
+    print(f"payload action: {payload['action']}")
     print(f"status: {status}")
     print(f"body: {body[:500]}")
     if 200 <= status < 300:
-        print("OK: backfill request accepted by n8n.")
+        print(ok_message)
         return 0
-    print("FAIL: n8n rejected the backfill request.", file=sys.stderr)
+    print(fail_message, file=sys.stderr)
     return 1
+
+
+def cmd_backfill(args: argparse.Namespace) -> int:
+    payload = build_backfill_payload(args.hours, channel_id=args.channel_id)
+    print(f"since: {payload['backfill']['since']}")
+    return post_action_payload(
+        payload,
+        ok_message="OK: backfill request accepted by n8n.",
+        fail_message="FAIL: n8n rejected the backfill request.",
+    )
+
+
+def cmd_catchup(args: argparse.Namespace) -> int:
+    schedules = parse_catchup_schedules(args.schedules)
+    payload = build_catchup_payload(
+        args.hours,
+        channel_id=args.channel_id,
+        skip_already_posted=not args.include_posted,
+        schedules=schedules,
+    )
+    catchup = payload["catchup"]
+    print(f"since: {catchup['since']}")
+    print(f"schedules: {', '.join(catchup['schedules'])}")
+    print(f"skip_already_posted: {catchup['skip_already_posted']}")
+    return post_action_payload(
+        payload,
+        ok_message="OK: catchup request accepted by n8n.",
+        fail_message="FAIL: n8n rejected the catchup request.",
+    )
 
 
 def main() -> int:
@@ -120,6 +196,34 @@ def main() -> int:
         help="Slack channel ID for #자동화_날씨7경제5 (overrides SLACK_CARD_NEWS_CHANNEL_ID).",
     )
     backfill_parser.set_defaults(func=cmd_backfill)
+
+    catchup_parser = sub.add_parser(
+        "catchup",
+        help="Run missed regular + Monday weekly schedules, skipping items already posted.",
+    )
+    catchup_parser.add_argument(
+        "--hours",
+        type=float,
+        default=24.0,
+        help="Look back this many hours (default: 24).",
+    )
+    catchup_parser.add_argument(
+        "--channel-id",
+        dest="channel_id",
+        default=None,
+        help="Slack channel ID for #자동화_날씨7경제5 (overrides SLACK_CARD_NEWS_CHANNEL_ID).",
+    )
+    catchup_parser.add_argument(
+        "--schedules",
+        default=None,
+        help="Comma-separated schedule keys: regular, monday_weekly, daily (default: regular,monday_weekly).",
+    )
+    catchup_parser.add_argument(
+        "--include-posted",
+        action="store_true",
+        help="Also republish items that were already posted in the lookback window.",
+    )
+    catchup_parser.set_defaults(func=cmd_catchup)
 
     args = parser.parse_args()
     return int(args.func(args))

@@ -21,6 +21,14 @@ export N8N_SHARED_SECRET="..."   # 선택
 python3 scripts/sync_n8n.py backfill --hours 1
 ```
 
+VM이 꺼져 하루치가 누락됐을 때 — **정규일정 + 월요일 주간, 이미 올라간 것 제외**:
+
+```bash
+python3 scripts/sync_n8n.py catchup --hours 24
+```
+
+자세한 복구 절차: `docs/vm-downtime-recovery.md`
+
 채널 `#자동화_날씨7경제5` 기본 ID: `C0B4JUZPX2L` (`SLACK_CARD_NEWS_CHANNEL_ID`로 변경 가능).
 
 ### n8n Webhook에서 처리할 JSON 예시
