@@ -1,13 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from scripts.sync_n8n import (
-    DEFAULT_CATCHUP_SCHEDULES,
-    build_backfill_payload,
-    build_catchup_payload,
-    parse_catchup_schedules,
-    wait_for_n8n_ready,
-)
+from common.n8n_schedule_sync import DEFAULT_CATCHUP_SCHEDULES, build_catchup_payload
+from scripts.sync_n8n import build_backfill_payload, parse_catchup_schedules, wait_for_n8n_ready
 
 
 class SyncN8nTests(unittest.TestCase):

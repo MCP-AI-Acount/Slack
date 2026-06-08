@@ -12,6 +12,32 @@ VM·n8n이 **완전히 죽은 게 아닐 수 있습니다.** `#자동화_날씨7
 
 **해결:** n8n 기동 후 **자동 catchup**을 붙이면, 이미 올라간 날씨는 `skip_already_posted`로 건너뛰고 경제·뉴스·정규일정만 올립니다.
 
+## 일기예보는 되는데 기사·일정만 안 될 때
+
+**VM 스크립트 문제가 아닙니다.** webhook이 200을 돌려줘도 n8n에 **`run_schedule` / `catchup` 분기가 없으면** Slack에 아무 것도 안 올라갑니다.
+
+| 증상 | 원인 |
+|------|------|
+| 일기예보 ✓ | `weather` Schedule Trigger 워크플로 — **별도로 정상** |
+| 기사 ✗ | `news` 워크플로 — 실패·비활성·cron 놓침 |
+| 정규일정 ✗ | `regular` / `monday_weekly` 워크플로 — 동일 |
+
+### VM에서 (기사+일정만, 날씨 제외)
+
+```bash
+export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
+python3 ~/Slack/scripts/sync_n8n.py trigger --only news,regular,monday_weekly,economy
+python3 ~/Slack/scripts/sync_n8n.py diagnose
+```
+
+### n8n에서 고칠 것
+
+Webhook 뒤 Switch에 `action === "run_schedule"` 추가 → `$json.schedule`별 워크플로 Execute.
+
+**상세:** `docs/n8n-run-schedule-workflow.md`
+
+---
+
 ## VM에 폴더 없음 / `scripts/sync_n8n.py` 없음
 
 명령만 복사해서 VM **홈 디렉터리**에서 실행하면 `scripts/` 폴더가 없어 에러가 납니다. 아래 **셋 중 하나**를 쓰세요.

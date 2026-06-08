@@ -1,16 +1,17 @@
 import unittest
 
-from scripts.standalone_startup_catchup import build_catchup_payload
+from scripts.standalone_startup_catchup import MISSING_CONTENT_DEFAULT, build_run_schedule_payload
 
 
 class StandaloneStartupCatchupTests(unittest.TestCase):
-    def test_build_catchup_payload(self) -> None:
-        payload = build_catchup_payload(24.0)
-        self.assertEqual(payload["action"], "card_news_catchup")
-        self.assertEqual(payload["catchup"]["trigger"], "n8n_startup")
-        self.assertTrue(payload["catchup"]["skip_already_posted"])
-        self.assertIn("weather", payload["catchup"]["schedules"])
-        self.assertIn("economy", payload["catchup"]["schedules"])
+    def test_run_schedule_news(self) -> None:
+        payload = build_run_schedule_payload("news")
+        self.assertEqual(payload["action"], "run_schedule")
+        self.assertEqual(payload["schedule"], "news")
+
+    def test_missing_default_has_news_not_weather(self) -> None:
+        self.assertIn("news", MISSING_CONTENT_DEFAULT)
+        self.assertNotIn("weather", MISSING_CONTENT_DEFAULT)
 
 
 if __name__ == "__main__":
