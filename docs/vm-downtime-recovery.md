@@ -1,5 +1,14 @@
 # VM 다운타임 후 카드뉴스 복구
 
+> **파일/디렉토리 없음 에러** → `docs/vm-quickstart-ko.md` 참고. `~/Slack` 없이 한 줄로 실행 가능.
+
+## 한 줄 실행 (~/Slack 불필요)
+
+```bash
+export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
+curl -fsSL "https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/vm-downtime-catchup-1c89/scripts/fetch_and_run.sh" | bash
+```
+
 ## 날씨만 올라가고 나머지는 안 올라갈 때
 
 VM·n8n이 **완전히 죽은 게 아닐 수 있습니다.** `#자동화_날씨7경제5` 채널명처럼 날씨·경제·뉴스는 **n8n 워크플로가 분리**돼 있는 경우가 많습니다.
@@ -24,8 +33,16 @@ VM·n8n이 **완전히 죽은 게 아닐 수 있습니다.** `#자동화_날씨7
 
 ### VM에서 (기사+일정만, 날씨 제외)
 
+**`~/Slack` 폴더 없으면 아래 한 줄만** (디렉토리 에러 방지):
+
 ```bash
 export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
+curl -fsSL "https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/vm-downtime-catchup-1c89/scripts/fetch_and_run.sh" | bash
+```
+
+repo가 이미 `~/Slack` 에 있을 때만:
+
+```bash
 python3 ~/Slack/scripts/sync_n8n.py trigger --only news,regular,monday_weekly,economy
 python3 ~/Slack/scripts/sync_n8n.py diagnose
 ```
