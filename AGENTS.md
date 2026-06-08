@@ -25,7 +25,8 @@ python3 -m pytest tests/ -v
 export N8N_WEBHOOK_URL="..."
 python3 scripts/sync_n8n.py verify
 python3 scripts/sync_n8n.py backfill --hours 1
-python3 scripts/sync_n8n.py catchup --hours 24   # VM 다운 후 정규+월요일 주간 복구
+python3 scripts/sync_n8n.py catchup --hours 24
+python3 scripts/sync_n8n.py startup   # n8n 기동 후 자동 catchup (start_n8n.sh에 연결)
 ```
 
 See `docs/card-news-n8n-reconnect.md` and `docs/vm-downtime-recovery.md`.

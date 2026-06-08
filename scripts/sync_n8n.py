@@ -7,6 +7,8 @@ import argparse
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -17,7 +19,17 @@ from common.slack_n8n_gateway import post_json  # noqa: E402
 
 
 DEFAULT_CARD_NEWS_CHANNEL_ID = "C0B4JUZPX2L"
-VALID_CATCHUP_SCHEDULES = frozenset({"regular", "monday_weekly", "daily"})
+VALID_CATCHUP_SCHEDULES = frozenset(
+    {"weather", "economy", "news", "regular", "monday_weekly", "daily"}
+)
+DEFAULT_CATCHUP_SCHEDULES = [
+    "weather",
+    "economy",
+    "news",
+    "regular",
+    "monday_weekly",
+    "daily",
+]
 
 
 def required_env(name: str) -> str:
@@ -62,7 +74,7 @@ def build_backfill_payload(hours: float, *, channel_id: str | None) -> dict[str,
 
 def parse_catchup_schedules(raw: str | None) -> list[str]:
     if not raw or not raw.strip():
-        return ["regular", "monday_weekly"]
+        return list(DEFAULT_CATCHUP_SCHEDULES)
     schedules = [part.strip().lower() for part in raw.split(",") if part.strip()]
     unknown = sorted(set(schedules) - VALID_CATCHUP_SCHEDULES)
     if unknown:
@@ -71,12 +83,33 @@ def parse_catchup_schedules(raw: str | None) -> list[str]:
     return schedules
 
 
+def n8n_health_url() -> str:
+    return os.getenv("N8N_HEALTH_URL", "http://localhost:5678/healthz").strip()
+
+
+def wait_for_n8n_ready(*, max_seconds: float, interval_seconds: float) -> bool:
+    deadline = time.time() + max_seconds
+    url = n8n_health_url()
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                if 200 <= response.status < 300:
+                    print(f"OK: n8n ready at {url}")
+                    return True
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"waiting for n8n ({url}): {exc}")
+        time.sleep(interval_seconds)
+    print(f"FAIL: n8n not ready after {max_seconds:g}s", file=sys.stderr)
+    return False
+
+
 def build_catchup_payload(
     hours: float,
     *,
     channel_id: str | None,
     skip_already_posted: bool,
     schedules: list[str],
+    trigger: str = "manual",
 ) -> dict[str, Any]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     channel = resolve_channel_id(channel_id)
@@ -91,6 +124,8 @@ def build_catchup_payload(
             "since": since.isoformat(),
             "skip_already_posted": skip_already_posted,
             "schedules": schedules,
+            "trigger": trigger,
+            "auto": trigger != "manual",
         },
         "slack": slack_context(
             channel_id=channel,
@@ -163,6 +198,7 @@ def cmd_catchup(args: argparse.Namespace) -> int:
         channel_id=args.channel_id,
         skip_already_posted=not args.include_posted,
         schedules=schedules,
+        trigger="manual",
     )
     catchup = payload["catchup"]
     print(f"since: {catchup['since']}")
@@ -172,6 +208,31 @@ def cmd_catchup(args: argparse.Namespace) -> int:
         payload,
         ok_message="OK: catchup request accepted by n8n.",
         fail_message="FAIL: n8n rejected the catchup request.",
+    )
+
+
+def cmd_startup(args: argparse.Namespace) -> int:
+    if not wait_for_n8n_ready(max_seconds=args.wait_seconds, interval_seconds=args.poll_seconds):
+        return 1
+    if args.verify_first and cmd_verify(argparse.Namespace()) != 0:
+        return 1
+    schedules = parse_catchup_schedules(args.schedules)
+    payload = build_catchup_payload(
+        args.hours,
+        channel_id=args.channel_id,
+        skip_already_posted=not args.include_posted,
+        schedules=schedules,
+        trigger="n8n_startup",
+    )
+    catchup = payload["catchup"]
+    print("Auto catchup after n8n startup")
+    print(f"since: {catchup['since']}")
+    print(f"schedules: {', '.join(catchup['schedules'])}")
+    print(f"skip_already_posted: {catchup['skip_already_posted']}")
+    return post_action_payload(
+        payload,
+        ok_message="OK: startup catchup accepted by n8n.",
+        fail_message="FAIL: n8n rejected the startup catchup request.",
     )
 
 
@@ -199,7 +260,7 @@ def main() -> int:
 
     catchup_parser = sub.add_parser(
         "catchup",
-        help="Run missed regular + Monday weekly schedules, skipping items already posted.",
+        help="Run missed schedules, skipping items already posted (default: all types).",
     )
     catchup_parser.add_argument(
         "--hours",
@@ -216,7 +277,7 @@ def main() -> int:
     catchup_parser.add_argument(
         "--schedules",
         default=None,
-        help="Comma-separated schedule keys: regular, monday_weekly, daily (default: regular,monday_weekly).",
+        help="Comma-separated schedule keys: weather, economy, news, regular, monday_weekly, daily (default: all).",
     )
     catchup_parser.add_argument(
         "--include-posted",
@@ -224,6 +285,53 @@ def main() -> int:
         help="Also republish items that were already posted in the lookback window.",
     )
     catchup_parser.set_defaults(func=cmd_catchup)
+
+    startup_parser = sub.add_parser(
+        "startup",
+        help="Wait for n8n, then auto-catchup missed schedules (wire into start_n8n.sh).",
+    )
+    startup_parser.add_argument(
+        "--hours",
+        type=float,
+        default=float(os.getenv("N8N_STARTUP_CATCHUP_HOURS", "24")),
+        help="Look back this many hours (default: 24, or N8N_STARTUP_CATCHUP_HOURS).",
+    )
+    startup_parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=float(os.getenv("N8N_STARTUP_WAIT_SECONDS", "180")),
+        help="Max seconds to wait for n8n /healthz (default: 180).",
+    )
+    startup_parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=float(os.getenv("N8N_STARTUP_POLL_SECONDS", "5")),
+        help="Seconds between n8n health checks (default: 5).",
+    )
+    startup_parser.add_argument(
+        "--no-verify",
+        dest="verify_first",
+        action="store_false",
+        help="Skip webhook ping before catchup.",
+    )
+    startup_parser.set_defaults(verify_first=True)
+    startup_parser.add_argument(
+        "--channel-id",
+        dest="channel_id",
+        default=None,
+        help="Slack channel ID for #자동화_날씨7경제5 (overrides SLACK_CARD_NEWS_CHANNEL_ID).",
+    )
+    startup_parser.add_argument(
+        "--schedules",
+        default=None,
+        help="Comma-separated schedule keys (default: all).",
+    )
+    startup_parser.add_argument(
+        "--include-posted",
+        action="store_true",
+        help="Also republish items that were already posted in the lookback window.",
+    )
+    startup_parser.set_defaults(func=cmd_startup)
 
     args = parser.parse_args()
     return int(args.func(args))

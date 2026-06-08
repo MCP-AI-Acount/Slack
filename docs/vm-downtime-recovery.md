@@ -1,5 +1,46 @@
 # VM 다운타임 후 카드뉴스 복구
 
+## 날씨만 올라가고 나머지는 안 올라갈 때
+
+VM·n8n이 **완전히 죽은 게 아닐 수 있습니다.** `#자동화_날씨7경제5` 채널명처럼 날씨·경제·뉴스는 **n8n 워크플로가 분리**돼 있는 경우가 많습니다.
+
+| 증상 | 가능 원인 |
+|------|-----------|
+| 날씨만 올라감 | `weather` 워크플로만 정상, `economy`/`news`/`monday_weekly` 워크플로 실패·비활성·cron 불일치 |
+| VM 꺼짐 직후 일부만 올라감 | VM 기동 시점에 맞은 cron만 실행, 이전 슬롯은 catch-up 없음 |
+| 수동 catchup 필요 | n8n startup hook 미연결, `card_news_catchup` 분기 없음 |
+
+**해결:** n8n 기동 후 **자동 catchup**을 붙이면, 이미 올라간 날씨는 `skip_already_posted`로 건너뛰고 경제·뉴스·정규일정만 올립니다.
+
+## 자동으로 올리게 하기 (권장)
+
+`EXE/start_n8n.sh` 끝에 아래 한 줄을 추가합니다.
+
+```bash
+bash /path/to/Slack/scripts/n8n_startup_catchup.sh &
+```
+
+또는 직접:
+
+```bash
+export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
+python3 scripts/sync_n8n.py startup
+```
+
+동작:
+
+1. n8n `/healthz` 준비될 때까지 대기 (기본 180초)
+2. webhook ping
+3. **전체 스케줄** (`weather`, `economy`, `news`, `regular`, `monday_weekly`, `daily`) 중 **아직 안 올라간 것만** catchup
+
+환경 변수:
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `N8N_STARTUP_CATCHUP_HOURS` | `24` | lookback 시간 |
+| `N8N_STARTUP_WAIT_SECONDS` | `180` | n8n 대기 |
+| `N8N_HEALTH_URL` | `http://localhost:5678/healthz` | health check URL |
+
 ## 왜 안 올라왔나
 
 | 원인 | 설명 |
@@ -40,7 +81,7 @@ python3 scripts/sync_n8n.py catchup --hours 24
 | 옵션 | 기본값 | 설명 |
 |------|--------|------|
 | `--hours` | `24` | 몇 시간 전까지 누락분을 볼지 |
-| `--schedules` | `regular,monday_weekly` | `regular` 정규일정, `monday_weekly` 월요일 주간, `daily` 매일 |
+| `--schedules` | 전체 (`weather`~`daily`) | `weather` 날씨, `economy` 경제, `news` 뉴스, `regular` 정규, `monday_weekly` 월요일 주간 |
 | `--include-posted` | off | 이미 올라간 항목도 다시 올림 |
 | `--channel-id` | `C0B4JUZPX2L` | `#자동화_날씨7경제5` |
 
@@ -55,7 +96,9 @@ Webhook에서 `action` 값으로 분기:
     "hours": 24,
     "since": "2026-06-07T01:00:00+00:00",
     "skip_already_posted": true,
-    "schedules": ["regular", "monday_weekly"]
+    "schedules": ["weather", "economy", "news", "regular", "monday_weekly", "daily"],
+    "trigger": "n8n_startup",
+    "auto": true
   },
   "slack": {
     "channel_id": "C0B4JUZPX2L",

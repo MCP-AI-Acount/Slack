@@ -173,7 +173,11 @@ export N8N_WEBHOOK_URL="https://n8n.example.com/webhook/slack-command"
 python3 scripts/sync_n8n.py verify
 python3 scripts/sync_n8n.py backfill --hours 1
 python3 scripts/sync_n8n.py catchup --hours 24
+python3 scripts/sync_n8n.py startup
 ```
+
+After `EXE/start_n8n.sh`, run `scripts/n8n_startup_catchup.sh` in the background so missed
+economy/news schedules auto-publish while skipping weather that already posted.
 
 See `docs/card-news-n8n-reconnect.md` and `docs/vm-downtime-recovery.md` for the full reconnect checklist.
 
