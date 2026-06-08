@@ -5,6 +5,41 @@
 
 ---
 
+## DNS 에러 (`Temporary failure in name resolution`)
+
+`N8N_WEBHOOK_URL` 이 **외부 도메인**(https://something.example.com/...) 이면 VM DNS가 안 될 때 이 에러가 납니다.
+
+**n8n이 같은 VM(mcp-auto-worker)에서 돌면 localhost 쓰세요:**
+
+```bash
+# n8n Webhook 노드 Production URL의 path 확인 (예: slack-command)
+export N8N_WEBHOOK_URL="http://127.0.0.1:5678/webhook/slack-command"
+python3 ~/trigger_cardnews.py trigger
+```
+
+또는:
+
+```bash
+export N8N_USE_LOCAL=true
+export N8N_WEBHOOK_PATH=slack-command
+python3 ~/trigger_cardnews.py trigger
+```
+
+n8n 살아 있는지:
+
+```bash
+curl -s http://127.0.0.1:5678/healthz
+```
+
+스크립트 v2.1+ 는 DNS 실패 시 **자동으로 localhost 재시도**합니다.  
+`/home/GCP/trigger_cardnews.py` 를 **다시 받으세요**:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/vm-downtime-catchup-1c89/scripts/standalone_startup_catchup.py" -o ~/trigger_cardnews.py
+```
+
+---
+
 ## 1. 한 줄 (권장)
 
 VM 터미널 — **어느 디렉토리에서든**:
@@ -60,4 +95,4 @@ python3 ~/Slack/scripts/sync_n8n.py trigger --only news,regular,monday_weekly,ec
 |--------|------|------|
 | `No such file ... ~/Slack/scripts/...` | repo 미설치 | 위 **1번** 또는 **2번** |
 | `N8N_WEBHOOK_URL is required` | URL 미설정 | `export N8N_WEBHOOK_URL=...` |
-| HTTP 200인데 Slack 비어 있음 | n8n 분기 없음 | n8n `run_schedule` Switch 추가 |
+| `Temporary failure in name resolution` | 외부 URL + VM DNS 없음 | `N8N_WEBHOOK_URL=http://127.0.0.1:5678/webhook/slack-command` |

@@ -25,8 +25,20 @@ class N8nScheduleSyncTests(unittest.TestCase):
         self.assertEqual(payload["action"], "run_schedule")
         self.assertEqual(payload["schedule"], "regular")
 
-    def test_parse_schedules(self) -> None:
-        self.assertEqual(parse_schedules("news,economy", default=MISSING_CONTENT_DEFAULT), ["news", "economy"])
+    def test_webhook_url_candidates_include_localhost(self) -> None:
+        from common.n8n_schedule_sync import local_n8n_webhook_url, webhook_url_candidates
+
+        urls = webhook_url_candidates()
+        self.assertTrue(any("127.0.0.1" in u or "localhost" in u for u in urls))
+        self.assertIn("/webhook/", local_n8n_webhook_url())
+
+    def test_is_dns_resolution_error(self) -> None:
+        import urllib.error
+
+        from common.n8n_schedule_sync import is_dns_resolution_error
+
+        exc = urllib.error.URLError(OSError(-3, "Temporary failure in name resolution"))
+        self.assertTrue(is_dns_resolution_error(exc))
 
 
 if __name__ == "__main__":

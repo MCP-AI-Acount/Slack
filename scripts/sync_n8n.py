@@ -36,10 +36,12 @@ def required_env(name: str) -> str:
 
 
 def webhook_url() -> str:
-    url = default_webhook_url()
-    if not url:
+    from common.n8n_schedule_sync import primary_webhook_url, webhook_url_candidates
+
+    urls = webhook_url_candidates()
+    if not urls:
         return required_env("N8N_WEBHOOK_URL")
-    return url
+    return primary_webhook_url()
 
 
 def build_backfill_payload(hours: float, *, channel_id: str | None) -> dict[str, Any]:

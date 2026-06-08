@@ -68,8 +68,77 @@ def default_webhook_url() -> str:
     return (
         os.getenv("N8N_CARD_NEWS_WEBHOOK_URL")
         or os.getenv("N8N_WEBHOOK_URL")
+        or os.getenv("N8N_LOCAL_WEBHOOK_URL")
         or ""
     ).strip()
+
+
+def local_n8n_webhook_url() -> str:
+    host = os.getenv("N8N_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = os.getenv("N8N_PORT", "5678").strip() or "5678"
+    path = (os.getenv("N8N_WEBHOOK_PATH") or "slack-command").strip().strip("/")
+    return f"http://{host}:{port}/webhook/{path}"
+
+
+def webhook_url_candidates() -> list[str]:
+    """URLs to try, in order. Same-VM n8n should use localhost (no DNS)."""
+    candidates: list[str] = []
+    explicit = default_webhook_url()
+    local = local_n8n_webhook_url()
+    use_local_first = os.getenv("N8N_USE_LOCAL", "").lower() in {"1", "true", "yes", "on"}
+
+    if use_local_first:
+        candidates.append(local)
+    if explicit:
+        candidates.append(explicit)
+    if local not in candidates:
+        candidates.append(local)
+
+    # Extra fallbacks if custom path wrong (only when nothing explicit configured).
+    if not explicit:
+        host = os.getenv("N8N_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        port = os.getenv("N8N_PORT", "5678").strip() or "5678"
+        for path in ("card-news", "slack-command", "cursor"):
+            url = f"http://{host}:{port}/webhook/{path}"
+            if url not in candidates:
+                candidates.append(url)
+    return candidates
+
+
+def primary_webhook_url() -> str:
+    urls = webhook_url_candidates()
+    if not urls:
+        raise SystemExit("N8N_WEBHOOK_URL or local n8n is required")
+    return urls[0]
+
+
+def is_dns_resolution_error(exc: BaseException) -> bool:
+    import urllib.error
+
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, OSError) and reason.errno in (-2, -3):
+            return True
+        text = str(reason).lower()
+        if "name resolution" in text or "getaddrinfo" in text:
+            return True
+    return False
+
+
+def print_dns_resolution_hint(failed_url: str) -> None:
+    local = local_n8n_webhook_url()
+    print(
+        f"\nDNS failed for: {failed_url}\n"
+        "n8n on the same VM (mcp-auto-worker) must use localhost — external hostnames "
+        "often fail when the VM has no outbound DNS.\n\n"
+        "Fix:\n"
+        f'  export N8N_WEBHOOK_URL="{local}"\n'
+        "  # or\n"
+        "  export N8N_USE_LOCAL=true\n"
+        "  export N8N_WEBHOOK_PATH=slack-command   # n8n Webhook path from UI\n\n"
+        "Check n8n is running: curl -s http://127.0.0.1:5678/healthz\n",
+        file=sys.stderr,
+    )
 
 
 def schedule_webhook_url(schedule: str, *, fallback_url: str) -> str:
@@ -141,25 +210,67 @@ def build_catchup_payload(
     }
 
 
+def post_json_try_urls(
+    urls: list[str],
+    payload: dict[str, Any],
+    post_json: Callable[..., tuple[int, str]],
+    *,
+    shared_secret: str | None,
+    authorization: str | None,
+    timeout_seconds: float,
+) -> tuple[int, str, str]:
+    import urllib.error
+
+    last_error: BaseException | None = None
+    for url in urls:
+        try:
+            status, body = post_json(
+                url,
+                payload,
+                shared_secret=shared_secret,
+                authorization=authorization,
+                timeout_seconds=timeout_seconds,
+            )
+            return status, body, url
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if is_dns_resolution_error(exc):
+                print(f"WARN: DNS failed for {url}, trying next URL...", file=sys.stderr)
+                continue
+            raise
+    if last_error is not None:
+        print_dns_resolution_hint(urls[0] if urls else "")
+        raise last_error
+    raise SystemExit("No webhook URL configured")
+
+
 def post_schedule_triggers(
     schedules: list[str],
     *,
-    fallback_url: str,
+    fallback_url: str | None,
     post_json: Callable[..., tuple[int, str]],
     channel_id: str | None,
     trigger: str,
     skip_if_posted: bool,
     timeout_seconds: float,
 ) -> int:
-    if not fallback_url:
-        raise SystemExit("N8N_WEBHOOK_URL is required")
+    base_candidates = webhook_url_candidates()
+    if fallback_url and fallback_url not in base_candidates:
+        base_candidates.insert(0, fallback_url)
+    if not base_candidates:
+        raise SystemExit("N8N_WEBHOOK_URL is required (or set N8N_USE_LOCAL=true for localhost n8n)")
 
     shared_secret = os.getenv("N8N_SHARED_SECRET")
     authorization = os.getenv("N8N_AUTHORIZATION")
     failures = 0
 
     for schedule in schedules:
-        url = schedule_webhook_url(schedule, fallback_url=fallback_url)
+        override = schedule_webhook_url(schedule, fallback_url=base_candidates[0])
+        if os.getenv(SCHEDULE_WEBHOOK_ENV.get(schedule, ""), "").strip():
+            urls = [override, *base_candidates]
+        else:
+            urls = base_candidates
+
         payload = build_run_schedule_payload(
             schedule,
             channel_id=channel_id,
@@ -168,15 +279,20 @@ def post_schedule_triggers(
         )
         label = SCHEDULE_LABELS_KO.get(schedule, schedule)
         print(f"\n--- trigger {schedule} ({label}) ---")
-        print(f"webhook: {url}")
-        status, body = post_json(
-            url,
-            payload,
-            shared_secret=shared_secret,
-            authorization=authorization,
-            timeout_seconds=timeout_seconds,
-        )
-        print(f"action: run_schedule")
+        try:
+            status, body, url_used = post_json_try_urls(
+                urls,
+                payload,
+                post_json,
+                shared_secret=shared_secret,
+                authorization=authorization,
+                timeout_seconds=timeout_seconds,
+            )
+        except urllib.error.URLError:
+            failures += 1
+            continue
+        print(f"webhook: {url_used}")
+        print("action: run_schedule")
         print(f"status: {status}")
         print(f"body: {body[:500]}")
         if 200 <= status < 300:
