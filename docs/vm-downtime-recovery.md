@@ -12,19 +12,50 @@ VM·n8n이 **완전히 죽은 게 아닐 수 있습니다.** `#자동화_날씨7
 
 **해결:** n8n 기동 후 **자동 catchup**을 붙이면, 이미 올라간 날씨는 `skip_already_posted`로 건너뛰고 경제·뉴스·정규일정만 올립니다.
 
-## 자동으로 올리게 하기 (권장)
+## VM에 폴더 없음 / `scripts/sync_n8n.py` 없음
 
-`EXE/start_n8n.sh` 끝에 아래 한 줄을 추가합니다.
+명령만 복사해서 VM **홈 디렉터리**에서 실행하면 `scripts/` 폴더가 없어 에러가 납니다. 아래 **셋 중 하나**를 쓰세요.
+
+### A. 설치 스크립트 (권장)
+
+VM에서 한 번:
 
 ```bash
-bash /path/to/Slack/scripts/n8n_startup_catchup.sh &
+git clone -b cursor/vm-downtime-catchup-1c89 https://github.com/MCP-AI-Acount/Slack.git ~/Slack
+bash ~/Slack/scripts/install_on_vm.sh
+export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
+bash ~/Slack/scripts/n8n_startup_catchup.sh
 ```
 
-또는 직접:
+### B. 파일 하나만 (git 없이)
+
+`scripts/standalone_startup_catchup.py` **한 파일**만 VM에 복사:
 
 ```bash
 export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
+python3 ~/standalone_startup_catchup.py
+```
+
+### C. repo 전체가 있는 경우
+
+```bash
+cd ~/Slack   # clone한 경로
+export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
 python3 scripts/sync_n8n.py startup
+```
+
+## 자동으로 올리게 하기 (권장)
+
+`EXE/start_n8n.sh` 끝에 아래 한 줄을 추가합니다 (`~/Slack`은 clone 경로).
+
+```bash
+bash ~/Slack/scripts/n8n_startup_catchup.sh &
+```
+
+또는 standalone 파일만 쓸 때:
+
+```bash
+python3 ~/standalone_startup_catchup.py &
 ```
 
 동작:
