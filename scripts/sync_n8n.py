@@ -16,13 +16,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.n8n_schedule_sync import (  # noqa: E402
     DEFAULT_CATCHUP_SCHEDULES,
-    MISSING_CONTENT_DEFAULT,
+    afternoon_recovery_schedules,
     build_catchup_payload,
     default_webhook_url,
     diagnose_schedules,
+    missing_content_schedules,
     parse_schedules,
     post_schedule_triggers,
     resolve_channel_id,
+    schedules_due_by_local_hour,
     slack_context,
 )
 from common.slack_n8n_gateway import post_json  # noqa: E402
@@ -162,7 +164,7 @@ def cmd_catchup(args: argparse.Namespace) -> int:
 
 
 def cmd_trigger(args: argparse.Namespace) -> int:
-    schedules = parse_schedules(args.only, default=MISSING_CONTENT_DEFAULT)
+    schedules = parse_schedules(args.only, default=missing_content_schedules())
     timeout = float(os.getenv("N8N_FORWARD_TIMEOUT_SECONDS", "30"))
     return post_schedule_triggers(
         schedules,
@@ -170,6 +172,43 @@ def cmd_trigger(args: argparse.Namespace) -> int:
         post_json=post_json,
         channel_id=args.channel_id,
         trigger="manual_trigger",
+        skip_if_posted=not args.force,
+        timeout_seconds=timeout,
+    )
+
+
+def cmd_afternoon(args: argparse.Namespace) -> int:
+    schedules = afternoon_recovery_schedules()
+    if args.only:
+        schedules = parse_schedules(args.only, default=schedules)
+    print(f"afternoon recovery schedules (KST): {', '.join(schedules)}")
+    timeout = float(os.getenv("N8N_FORWARD_TIMEOUT_SECONDS", "30"))
+    return post_schedule_triggers(
+        schedules,
+        fallback_url=webhook_url(),
+        post_json=post_json,
+        channel_id=args.channel_id,
+        trigger="afternoon_recovery",
+        skip_if_posted=not args.force,
+        timeout_seconds=timeout,
+    )
+
+
+def cmd_due(args: argparse.Namespace) -> int:
+    schedules = schedules_due_by_local_hour(include_weather=args.include_weather)
+    if not schedules:
+        print("No schedule slots due yet today (KST).")
+        return 0
+    print(f"due today (KST): {', '.join(schedules)}")
+    if args.dry_run:
+        return 0
+    timeout = float(os.getenv("N8N_FORWARD_TIMEOUT_SECONDS", "30"))
+    return post_schedule_triggers(
+        schedules,
+        fallback_url=webhook_url(),
+        post_json=post_json,
+        channel_id=args.channel_id,
+        trigger="due_slot_recovery",
         skip_if_posted=not args.force,
         timeout_seconds=timeout,
     )
@@ -191,7 +230,7 @@ def cmd_startup(args: argparse.Namespace) -> int:
         return 1
 
     # Prefer direct per-schedule triggers (works when catchup branch missing).
-    trigger_schedules = parse_schedules(args.schedules, default=MISSING_CONTENT_DEFAULT)
+    trigger_schedules = parse_schedules(args.schedules, default=missing_content_schedules())
     print("Step 1: direct run_schedule triggers (news/regular/… — skips weather by default)")
     trigger_rc = post_schedule_triggers(
         trigger_schedules,
@@ -259,6 +298,22 @@ def main() -> int:
     trigger_parser.add_argument("--channel-id", dest="channel_id", default=None)
     trigger_parser.add_argument("--force", action="store_true", help="Post even if already posted today.")
     trigger_parser.set_defaults(func=cmd_trigger)
+
+    afternoon_parser = sub.add_parser(
+        "afternoon",
+        help="Recover missed afternoon regular schedule (and other due slots, KST).",
+    )
+    afternoon_parser.add_argument("--only", default=None, help="Override schedule list.")
+    afternoon_parser.add_argument("--channel-id", dest="channel_id", default=None)
+    afternoon_parser.add_argument("--force", action="store_true", help="Post even if already posted today.")
+    afternoon_parser.set_defaults(func=cmd_afternoon)
+
+    due_parser = sub.add_parser("due", help="Trigger every schedule whose KST slot hour has passed today.")
+    due_parser.add_argument("--include-weather", action="store_true")
+    due_parser.add_argument("--channel-id", dest="channel_id", default=None)
+    due_parser.add_argument("--force", action="store_true")
+    due_parser.add_argument("--dry-run", action="store_true")
+    due_parser.set_defaults(func=cmd_due)
 
     sub.add_parser("diagnose", help="Probe webhook + each schedule; explain likely n8n gaps.").set_defaults(
         func=cmd_diagnose

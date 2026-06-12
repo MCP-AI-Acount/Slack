@@ -1,10 +1,17 @@
 import unittest
+from datetime import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from common.n8n_schedule_sync import (
+    KST,
     MISSING_CONTENT_DEFAULT,
+    afternoon_recovery_schedules,
     build_run_schedule_payload,
+    filter_schedules_for_weekday,
+    missing_content_schedules,
     parse_schedules,
+    webhook_response_likely_noop,
 )
 from scripts.standalone_startup_catchup import build_run_schedule_payload as standalone_run_payload
 
@@ -39,6 +46,39 @@ class N8nScheduleSyncTests(unittest.TestCase):
 
         exc = urllib.error.URLError(OSError(-3, "Temporary failure in name resolution"))
         self.assertTrue(is_dns_resolution_error(exc))
+
+    def test_missing_content_excludes_monday_weekly_on_friday(self) -> None:
+        friday_afternoon = datetime(2026, 6, 12, 15, 0, tzinfo=KST)
+        schedules = missing_content_schedules(now=friday_afternoon)
+        self.assertNotIn("monday_weekly", schedules)
+        self.assertIn("regular", schedules)
+
+    def test_filter_schedules_for_weekday_keeps_monday_weekly_on_monday(self) -> None:
+        monday = datetime(2026, 6, 8, 10, 0, tzinfo=KST)
+        schedules = filter_schedules_for_weekday(MISSING_CONTENT_DEFAULT, now=monday)
+        self.assertIn("monday_weekly", schedules)
+
+    def test_afternoon_recovery_friday(self) -> None:
+        friday_afternoon = datetime(2026, 6, 12, 15, 0, tzinfo=KST)
+        schedules = afternoon_recovery_schedules(now=friday_afternoon)
+        self.assertEqual(schedules[0], "news")
+        self.assertIn("regular", schedules)
+        self.assertNotIn("monday_weekly", schedules)
+
+    def test_afternoon_recovery_before_slot_raises(self) -> None:
+        early = datetime(2026, 6, 12, 10, 0, tzinfo=KST)
+        with self.assertRaises(SystemExit):
+            afternoon_recovery_schedules(now=early)
+
+    def test_webhook_response_likely_noop(self) -> None:
+        self.assertTrue(webhook_response_likely_noop(200, ""))
+        self.assertTrue(
+            webhook_response_likely_noop(200, '{"headers":{},"params":{},"query":{},"body":{}}')
+        )
+        self.assertFalse(webhook_response_likely_noop(200, '{"ok": true, "schedule": "regular"}'))
+        self.assertFalse(
+            webhook_response_likely_noop(200, '{"message":"Workflow was started"}')
+        )
 
 
 if __name__ == "__main__":

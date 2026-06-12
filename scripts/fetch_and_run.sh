@@ -11,7 +11,7 @@
 #   curl -fsSL ".../fetch_and_run.sh" | bash -s diagnose
 set -euo pipefail
 
-RAW_BASE="${SLACK_RAW_BASE:-https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/vm-downtime-catchup-1c89/scripts}"
+RAW_BASE="${SLACK_RAW_BASE:-https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/card-schedule-afternoon-fix-73c1/scripts}"
 INSTALL_DIR="${CARDNEWS_BIN_DIR:-${HOME}/.local/bin}"
 SCRIPT="${INSTALL_DIR}/trigger_cardnews.py"
 MODE="${1:-trigger}"
@@ -40,9 +40,16 @@ if [[ -z "${N8N_WEBHOOK_URL:-}" && -z "${N8N_CARD_NEWS_WEBHOOK_URL:-}" ]]; then
   fi
 fi
 
-if [[ -z "${N8N_WEBHOOK_URL:-}" && -z "${N8N_CARD_NEWS_WEBHOOK_URL:-}" ]]; then
-  echo "ERROR: set N8N_WEBHOOK_URL first, e.g.:" >&2
-  echo '  export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."' >&2
+N8N_HEALTH_URL="${N8N_HEALTH_URL:-http://127.0.0.1:5678/healthz}"
+if curl -fsS --connect-timeout 2 "${N8N_HEALTH_URL}" >/dev/null 2>&1; then
+  echo ">>> local n8n detected at ${N8N_HEALTH_URL}"
+  export N8N_USE_LOCAL="${N8N_USE_LOCAL:-true}"
+fi
+
+if [[ -z "${N8N_WEBHOOK_URL:-}" && -z "${N8N_CARD_NEWS_WEBHOOK_URL:-}" && "${N8N_USE_LOCAL:-}" != "true" ]]; then
+  echo "ERROR: set N8N_WEBHOOK_URL or run on a VM with local n8n (127.0.0.1:5678), e.g.:" >&2
+  echo '  export N8N_WEBHOOK_URL="http://127.0.0.1:5678/webhook/slack-command"' >&2
+  echo '  export N8N_USE_LOCAL=true' >&2
   exit 1
 fi
 

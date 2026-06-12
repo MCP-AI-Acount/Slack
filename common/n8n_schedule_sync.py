@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 DEFAULT_CARD_NEWS_CHANNEL_ID = "C0B4JUZPX2L"
 VALID_SCHEDULES = frozenset({"weather", "economy", "news", "regular", "monday_weekly", "daily"})
@@ -20,6 +22,17 @@ DEFAULT_CATCHUP_SCHEDULES = [
 ]
 # When weather already posted, trigger these for "기사+일정만" recovery.
 MISSING_CONTENT_DEFAULT = ["news", "regular", "monday_weekly", "economy"]
+
+# KST slot hours (override via CARD_NEWS_SLOT_<NAME>_HOUR env vars).
+DEFAULT_SCHEDULE_SLOTS_KST: dict[str, int] = {
+    "weather": 7,
+    "news": 9,
+    "economy": 11,
+    "regular": 14,
+    "monday_weekly": 9,
+    "daily": 18,
+}
+KST = ZoneInfo("Asia/Seoul")
 
 SCHEDULE_WEBHOOK_ENV: dict[str, str] = {
     "weather": "N8N_WEBHOOK_URL_WEATHER",
@@ -38,6 +51,104 @@ SCHEDULE_LABELS_KO: dict[str, str] = {
     "monday_weekly": "월요일 주간",
     "daily": "매일",
 }
+
+
+def schedule_timezone() -> ZoneInfo:
+    tz_name = os.getenv("CARD_NEWS_TIMEZONE", "Asia/Seoul").strip() or "Asia/Seoul"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return KST
+
+
+def schedule_slot_hour(schedule: str) -> int:
+    env_name = f"CARD_NEWS_SLOT_{schedule.upper()}_HOUR"
+    raw = os.getenv(env_name)
+    if raw:
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise SystemExit(f"{env_name} must be an integer hour (0-23)") from exc
+    return DEFAULT_SCHEDULE_SLOTS_KST.get(schedule, 12)
+
+
+def filter_schedules_for_weekday(schedules: list[str], *, now: datetime | None = None) -> list[str]:
+    """Drop monday_weekly unless today is Monday in the card-news timezone."""
+    current = now or datetime.now(schedule_timezone())
+    if current.weekday() == 0:
+        return list(schedules)
+    return [schedule for schedule in schedules if schedule != "monday_weekly"]
+
+
+def schedules_due_by_local_hour(
+    *,
+    now: datetime | None = None,
+    include_weather: bool = False,
+) -> list[str]:
+    """Return schedules whose KST slot hour has already passed today."""
+    current = datetime.now(schedule_timezone()) if now is None else now.astimezone(schedule_timezone())
+    due: list[str] = []
+    for schedule in DEFAULT_CATCHUP_SCHEDULES:
+        if schedule == "weather" and not include_weather:
+            continue
+        if schedule == "monday_weekly" and current.weekday() != 0:
+            continue
+        if current.hour >= schedule_slot_hour(schedule):
+            due.append(schedule)
+    return due
+
+
+def afternoon_recovery_schedules(*, now: datetime | None = None) -> list[str]:
+    """Schedules typically missing when afternoon regular cards did not post."""
+    current = datetime.now(schedule_timezone()) if now is None else now.astimezone(schedule_timezone())
+    regular_hour = schedule_slot_hour("regular")
+    if current.hour < regular_hour:
+        raise SystemExit(
+            f"Afternoon recovery runs after {regular_hour}:00 KST "
+            f"(now {current.strftime('%H:%M %Z')}). Use: trigger --only news,regular"
+        )
+
+    schedules = ["regular"]
+    if current.hour >= schedule_slot_hour("news"):
+        schedules.insert(0, "news")
+    if current.hour >= schedule_slot_hour("economy"):
+        schedules.append("economy")
+    if current.weekday() == 0 and current.hour >= schedule_slot_hour("monday_weekly"):
+        schedules.append("monday_weekly")
+    return schedules
+
+
+def missing_content_schedules(*, now: datetime | None = None) -> list[str]:
+    """Default recovery list with weekday-aware monday_weekly."""
+    return filter_schedules_for_weekday(MISSING_CONTENT_DEFAULT, now=now)
+
+
+def webhook_response_likely_noop(status: int, body: str) -> bool:
+    """Heuristic: HTTP 200 but n8n probably did not run run_schedule/catchup."""
+    if not (200 <= status < 300):
+        return False
+    text = body.strip()
+    if not text:
+        return True
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("ok") is True:
+        return False
+    if payload.get("action") in {"run_schedule", "card_news_catchup", "card_news_backfill"}:
+        return False
+    if payload.get("schedule") or payload.get("catchup") or payload.get("run"):
+        return False
+    message = str(payload.get("message", "")).lower()
+    if "workflow was started" in message or "workflow started" in message:
+        return False
+    # Webhook node default: only echoes headers/body without downstream IF/Switch.
+    if set(payload.keys()) <= {"headers", "params", "query", "body", "webhookUrl"}:
+        return True
+    return False
 
 
 def parse_schedules(raw: str | None, *, default: list[str]) -> list[str]:
@@ -296,7 +407,15 @@ def post_schedule_triggers(
         print(f"status: {status}")
         print(f"body: {body[:500]}")
         if 200 <= status < 300:
-            print(f"OK: {schedule} trigger accepted (check n8n Executions for actual post).")
+            if webhook_response_likely_noop(status, body):
+                print(
+                    f"WARN: {schedule} returned HTTP 200 but response looks like a "
+                    "webhook echo only — n8n may lack action=run_schedule branch.",
+                    file=sys.stderr,
+                )
+                failures += 1
+            else:
+                print(f"OK: {schedule} trigger accepted (check n8n Executions for actual post).")
         else:
             print(f"FAIL: {schedule} trigger rejected.", file=sys.stderr)
             failures += 1
@@ -304,14 +423,19 @@ def post_schedule_triggers(
 
     if failures:
         print(
-            f"\n{failures}/{len(schedules)} triggers failed at HTTP level.",
+            f"\n{failures}/{len(schedules)} triggers failed or likely no-ops.",
+            file=sys.stderr,
+        )
+        print(
+            "Fix n8n Webhook → Switch on action=run_schedule. "
+            "See docs/n8n-run-schedule-workflow.md",
             file=sys.stderr,
         )
         return 1
 
     print(
-        "\nAll triggers returned HTTP 2xx. If Slack still empty, n8n workflow "
-        "likely has no branch for action=run_schedule — see docs/n8n-run-schedule-workflow.md"
+        "\nAll triggers returned HTTP 2xx with actionable responses. "
+        "If Slack still empty, check n8n Executions for workflow errors."
     )
     return 0
 

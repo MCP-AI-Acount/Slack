@@ -46,11 +46,24 @@ VM 터미널 — **어느 디렉토리에서든**:
 
 ```bash
 export N8N_WEBHOOK_URL="https://YOUR-N8N/webhook/..."
-curl -fsSL "https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/vm-downtime-catchup-1c89/scripts/fetch_and_run.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/card-schedule-afternoon-fix-73c1/scripts/fetch_and_run.sh" | bash
 ```
 
 - 파일 위치: `~/.local/bin/trigger_cardnews.py` (자동 다운로드)
-- 기사+정규일정+경제+월요일주간만 (일기예보 제외)
+- 기사+정규일정+경제 (금요일 등엔 월요일주간 제외, 일기예보 제외)
+- **같은 VM에 n8n이 있으면** `N8N_WEBHOOK_URL` 없이도 localhost 자동 감지
+
+### 오후 정규일정만 안 올라갔을 때 (14시 KST 이후)
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/card-schedule-afternoon-fix-73c1/scripts/fetch_and_run.sh" | bash -s afternoon
+```
+
+또는 repo가 있을 때:
+
+```bash
+python3 ~/Slack/scripts/sync_n8n.py afternoon
+```
 
 ---
 

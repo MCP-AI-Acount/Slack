@@ -10,9 +10,13 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 MISSING_CONTENT_DEFAULT = ["news", "regular", "monday_weekly", "economy"]
+KST = ZoneInfo("Asia/Seoul")
+SCHEDULE_SLOTS_KST = {"news": 9, "economy": 11, "regular": 14, "monday_weekly": 9}
 SCHEDULE_WEBHOOK_ENV = {
     "weather": "N8N_WEBHOOK_URL_WEATHER",
     "economy": "N8N_WEBHOOK_URL_ECONOMY",
@@ -144,9 +148,55 @@ def build_run_schedule_payload(schedule: str) -> dict[str, Any]:
     }
 
 
+def missing_content_schedules() -> list[str]:
+    now = datetime.now(KST)
+    if now.weekday() == 0:
+        return list(MISSING_CONTENT_DEFAULT)
+    return [s for s in MISSING_CONTENT_DEFAULT if s != "monday_weekly"]
+
+
+def afternoon_recovery_schedules() -> list[str]:
+    now = datetime.now(KST)
+    regular_hour = SCHEDULE_SLOTS_KST["regular"]
+    if now.hour < regular_hour:
+        raise SystemExit(
+            f"Afternoon recovery runs after {regular_hour}:00 KST (now {now.strftime('%H:%M')})"
+        )
+    schedules = ["regular"]
+    if now.hour >= SCHEDULE_SLOTS_KST["news"]:
+        schedules.insert(0, "news")
+    if now.hour >= SCHEDULE_SLOTS_KST["economy"]:
+        schedules.append("economy")
+    if now.weekday() == 0 and now.hour >= SCHEDULE_SLOTS_KST["monday_weekly"]:
+        schedules.append("monday_weekly")
+    return schedules
+
+
+def webhook_response_likely_noop(status: int, body: str) -> bool:
+    if not (200 <= status < 300):
+        return False
+    text = body.strip()
+    if not text:
+        return True
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("ok") is True:
+        return False
+    message = str(payload.get("message", "")).lower()
+    if "workflow was started" in message:
+        return False
+    if set(payload.keys()) <= {"headers", "params", "query", "body", "webhookUrl"}:
+        return True
+    return False
+
+
 def parse_only(raw: str | None) -> list[str]:
     if not raw or not raw.strip():
-        return list(MISSING_CONTENT_DEFAULT)
+        return missing_content_schedules()
     return [p.strip().lower() for p in raw.split(",") if p.strip()]
 
 
@@ -174,7 +224,12 @@ def cmd_trigger(args: argparse.Namespace) -> int:
             continue
         print(f"webhook: {url_used}")
         print(f"status: {status} body: {body[:300]}")
-        if not (200 <= status < 300):
+        if not (200 <= status < 300) or webhook_response_likely_noop(status, body):
+            if 200 <= status < 300:
+                print(
+                    f"WARN: {schedule} HTTP 200 but likely no run_schedule branch in n8n.",
+                    file=sys.stderr,
+                )
             failures += 1
     if failures:
         print(f"\n{failures} failed.", file=sys.stderr)
@@ -183,14 +238,25 @@ def cmd_trigger(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_afternoon(args: argparse.Namespace) -> int:
+    schedules = afternoon_recovery_schedules()
+    if args.only:
+        schedules = parse_only(args.only)
+    print(f"afternoon recovery: {', '.join(schedules)}")
+    return cmd_trigger(argparse.Namespace(only=",".join(schedules)))
+
+
 def cmd_startup(_: argparse.Namespace) -> int:
-    return cmd_trigger(argparse.Namespace(only=",".join(MISSING_CONTENT_DEFAULT)))
+    return cmd_trigger(argparse.Namespace(only=",".join(missing_content_schedules())))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Standalone n8n schedule trigger")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("startup", help="Trigger news+regular+… (skip weather)").set_defaults(func=cmd_startup)
+    afternoon_parser = sub.add_parser("afternoon", help="Recover missed afternoon regular schedule (KST)")
+    afternoon_parser.add_argument("--only", default=None)
+    afternoon_parser.set_defaults(func=cmd_afternoon)
     trigger_parser = sub.add_parser("trigger", help="Trigger specific schedules")
     trigger_parser.add_argument("--only", default=None)
     trigger_parser.set_defaults(func=cmd_trigger)
@@ -198,7 +264,7 @@ def main() -> int:
     if not args.command:
         args.command = "startup"
         args.func = cmd_startup
-        args.only = ",".join(MISSING_CONTENT_DEFAULT)
+        args.only = ",".join(missing_content_schedules())
     return int(args.func(args))
 
 
