@@ -1,0 +1,511 @@
+"""Shared n8n schedule trigger helpers for card-news sync scripts."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+DEFAULT_CARD_NEWS_CHANNEL_ID = "C0B4JUZPX2L"
+VALID_SCHEDULES = frozenset({"weather", "economy", "news", "regular", "monday_weekly", "daily"})
+DEFAULT_CATCHUP_SCHEDULES = [
+    "weather",
+    "economy",
+    "news",
+    "regular",
+    "monday_weekly",
+    "daily",
+]
+# When weather already posted, trigger these for "기사+일정만" recovery.
+MISSING_CONTENT_DEFAULT = ["news", "regular", "monday_weekly", "economy"]
+
+# KST slot hours (override via CARD_NEWS_SLOT_<NAME>_HOUR env vars).
+DEFAULT_SCHEDULE_SLOTS_KST: dict[str, int] = {
+    "weather": 7,
+    "news": 9,
+    "economy": 11,
+    "regular": 14,
+    "monday_weekly": 9,
+    "daily": 18,
+}
+KST = ZoneInfo("Asia/Seoul")
+
+SCHEDULE_WEBHOOK_ENV: dict[str, str] = {
+    "weather": "N8N_WEBHOOK_URL_WEATHER",
+    "economy": "N8N_WEBHOOK_URL_ECONOMY",
+    "news": "N8N_WEBHOOK_URL_NEWS",
+    "regular": "N8N_WEBHOOK_URL_REGULAR",
+    "monday_weekly": "N8N_WEBHOOK_URL_MONDAY_WEEKLY",
+    "daily": "N8N_WEBHOOK_URL_DAILY",
+}
+
+SCHEDULE_LABELS_KO: dict[str, str] = {
+    "weather": "일기예보(날씨)",
+    "economy": "경제",
+    "news": "기사/뉴스",
+    "regular": "정규일정",
+    "monday_weekly": "월요일 주간",
+    "daily": "매일",
+}
+
+
+def schedule_timezone() -> ZoneInfo:
+    tz_name = os.getenv("CARD_NEWS_TIMEZONE", "Asia/Seoul").strip() or "Asia/Seoul"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return KST
+
+
+def schedule_slot_hour(schedule: str) -> int:
+    env_name = f"CARD_NEWS_SLOT_{schedule.upper()}_HOUR"
+    raw = os.getenv(env_name)
+    if raw:
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise SystemExit(f"{env_name} must be an integer hour (0-23)") from exc
+    return DEFAULT_SCHEDULE_SLOTS_KST.get(schedule, 12)
+
+
+def filter_schedules_for_weekday(schedules: list[str], *, now: datetime | None = None) -> list[str]:
+    """Drop monday_weekly unless today is Monday in the card-news timezone."""
+    current = now or datetime.now(schedule_timezone())
+    if current.weekday() == 0:
+        return list(schedules)
+    return [schedule for schedule in schedules if schedule != "monday_weekly"]
+
+
+def schedules_due_by_local_hour(
+    *,
+    now: datetime | None = None,
+    include_weather: bool = False,
+) -> list[str]:
+    """Return schedules whose KST slot hour has already passed today."""
+    current = datetime.now(schedule_timezone()) if now is None else now.astimezone(schedule_timezone())
+    due: list[str] = []
+    for schedule in DEFAULT_CATCHUP_SCHEDULES:
+        if schedule == "weather" and not include_weather:
+            continue
+        if schedule == "monday_weekly" and current.weekday() != 0:
+            continue
+        if current.hour >= schedule_slot_hour(schedule):
+            due.append(schedule)
+    return due
+
+
+def afternoon_recovery_schedules(*, now: datetime | None = None) -> list[str]:
+    """Schedules typically missing when afternoon regular cards did not post."""
+    current = datetime.now(schedule_timezone()) if now is None else now.astimezone(schedule_timezone())
+    regular_hour = schedule_slot_hour("regular")
+    if current.hour < regular_hour:
+        raise SystemExit(
+            f"Afternoon recovery runs after {regular_hour}:00 KST "
+            f"(now {current.strftime('%H:%M %Z')}). Use: trigger --only news,regular"
+        )
+
+    schedules = ["regular"]
+    if current.hour >= schedule_slot_hour("news"):
+        schedules.insert(0, "news")
+    if current.hour >= schedule_slot_hour("economy"):
+        schedules.append("economy")
+    if current.weekday() == 0 and current.hour >= schedule_slot_hour("monday_weekly"):
+        schedules.append("monday_weekly")
+    return schedules
+
+
+def missing_content_schedules(*, now: datetime | None = None) -> list[str]:
+    """Default recovery list with weekday-aware monday_weekly."""
+    return filter_schedules_for_weekday(MISSING_CONTENT_DEFAULT, now=now)
+
+
+def webhook_response_likely_noop(status: int, body: str) -> bool:
+    """Heuristic: HTTP 200 but n8n probably did not run run_schedule/catchup."""
+    if not (200 <= status < 300):
+        return False
+    text = body.strip()
+    if not text:
+        return True
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("ok") is True:
+        return False
+    if payload.get("action") in {"run_schedule", "card_news_catchup", "card_news_backfill"}:
+        return False
+    if payload.get("schedule") or payload.get("catchup") or payload.get("run"):
+        return False
+    message = str(payload.get("message", "")).lower()
+    if "workflow was started" in message or "workflow started" in message:
+        return False
+    # Webhook node default: only echoes headers/body without downstream IF/Switch.
+    if set(payload.keys()) <= {"headers", "params", "query", "body", "webhookUrl"}:
+        return True
+    return False
+
+
+def parse_schedules(raw: str | None, *, default: list[str]) -> list[str]:
+    if not raw or not raw.strip():
+        return list(default)
+    schedules = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    unknown = sorted(set(schedules) - VALID_SCHEDULES)
+    if unknown:
+        allowed = ", ".join(sorted(VALID_SCHEDULES))
+        raise SystemExit(f"Unknown schedule(s): {', '.join(unknown)}. Allowed: {allowed}")
+    return schedules
+
+
+def resolve_channel_id(channel_id: str | None) -> str:
+    return (channel_id or os.getenv("SLACK_CARD_NEWS_CHANNEL_ID") or DEFAULT_CARD_NEWS_CHANNEL_ID).strip()
+
+
+def slack_context(*, channel_id: str, text: str) -> dict[str, str]:
+    return {
+        "channel_id": channel_id,
+        "channel_name": os.getenv("SLACK_CARD_NEWS_CHANNEL_NAME", "자동화_날씨7경제5"),
+        "command": os.getenv("SLACK_CARD_NEWS_COMMAND", "/cursor"),
+        "text": text,
+    }
+
+
+def default_webhook_url() -> str:
+    return (
+        os.getenv("N8N_CARD_NEWS_WEBHOOK_URL")
+        or os.getenv("N8N_WEBHOOK_URL")
+        or os.getenv("N8N_LOCAL_WEBHOOK_URL")
+        or ""
+    ).strip()
+
+
+def local_n8n_webhook_url() -> str:
+    host = os.getenv("N8N_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = os.getenv("N8N_PORT", "5678").strip() or "5678"
+    path = (os.getenv("N8N_WEBHOOK_PATH") or "slack-command").strip().strip("/")
+    return f"http://{host}:{port}/webhook/{path}"
+
+
+def webhook_url_candidates() -> list[str]:
+    """URLs to try, in order. Same-VM n8n should use localhost (no DNS)."""
+    candidates: list[str] = []
+    explicit = default_webhook_url()
+    local = local_n8n_webhook_url()
+    use_local_first = os.getenv("N8N_USE_LOCAL", "").lower() in {"1", "true", "yes", "on"}
+
+    if use_local_first:
+        candidates.append(local)
+    if explicit:
+        candidates.append(explicit)
+    if local not in candidates:
+        candidates.append(local)
+
+    # Extra fallbacks if custom path wrong (only when nothing explicit configured).
+    if not explicit:
+        host = os.getenv("N8N_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        port = os.getenv("N8N_PORT", "5678").strip() or "5678"
+        for path in ("card-news", "slack-command", "cursor"):
+            url = f"http://{host}:{port}/webhook/{path}"
+            if url not in candidates:
+                candidates.append(url)
+    return candidates
+
+
+def primary_webhook_url() -> str:
+    urls = webhook_url_candidates()
+    if not urls:
+        raise SystemExit("N8N_WEBHOOK_URL or local n8n is required")
+    return urls[0]
+
+
+def is_dns_resolution_error(exc: BaseException) -> bool:
+    import urllib.error
+
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, OSError) and reason.errno in (-2, -3):
+            return True
+        text = str(reason).lower()
+        if "name resolution" in text or "getaddrinfo" in text:
+            return True
+    return False
+
+
+def print_dns_resolution_hint(failed_url: str) -> None:
+    local = local_n8n_webhook_url()
+    print(
+        f"\nDNS failed for: {failed_url}\n"
+        "n8n on the same VM (mcp-auto-worker) must use localhost — external hostnames "
+        "often fail when the VM has no outbound DNS.\n\n"
+        "Fix:\n"
+        f'  export N8N_WEBHOOK_URL="{local}"\n'
+        "  # or\n"
+        "  export N8N_USE_LOCAL=true\n"
+        "  export N8N_WEBHOOK_PATH=slack-command   # n8n Webhook path from UI\n\n"
+        "Check n8n is running: curl -s http://127.0.0.1:5678/healthz\n",
+        file=sys.stderr,
+    )
+
+
+def schedule_webhook_url(schedule: str, *, fallback_url: str) -> str:
+    env_name = SCHEDULE_WEBHOOK_ENV.get(schedule, "")
+    if env_name:
+        override = os.getenv(env_name, "").strip()
+        if override:
+            return override
+    return fallback_url
+
+
+def build_run_schedule_payload(
+    schedule: str,
+    *,
+    channel_id: str | None,
+    trigger: str = "manual",
+    skip_if_posted: bool = True,
+) -> dict[str, Any]:
+    channel = resolve_channel_id(channel_id)
+    label = SCHEDULE_LABELS_KO.get(schedule, schedule)
+    return {
+        "source": "cursor",
+        "gateway": "sync-n8n",
+        "action": "run_schedule",
+        "schedule": schedule,
+        "received_at": int(time.time()),
+        "run": {
+            "schedule": schedule,
+            "trigger": trigger,
+            "skip_if_posted": skip_if_posted,
+            "force": not skip_if_posted,
+        },
+        "slack": slack_context(
+            channel_id=channel,
+            text=f"run schedule: {label} ({schedule})",
+        ),
+    }
+
+
+def build_catchup_payload(
+    hours: float,
+    *,
+    channel_id: str | None,
+    skip_already_posted: bool,
+    schedules: list[str],
+    trigger: str = "manual",
+    gateway: str = "sync-n8n",
+) -> dict[str, Any]:
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    channel = resolve_channel_id(channel_id)
+    schedule_label = "+".join(schedules)
+    return {
+        "source": "cursor",
+        "gateway": gateway,
+        "action": "card_news_catchup",
+        "received_at": int(time.time()),
+        "catchup": {
+            "hours": hours,
+            "since": since.isoformat(),
+            "skip_already_posted": skip_already_posted,
+            "schedules": schedules,
+            "trigger": trigger,
+            "auto": trigger != "manual",
+        },
+        "slack": slack_context(
+            channel_id=channel,
+            text=f"card news catchup {schedule_label} skip_posted={skip_already_posted} last {hours:g}h",
+        ),
+    }
+
+
+def post_json_try_urls(
+    urls: list[str],
+    payload: dict[str, Any],
+    post_json: Callable[..., tuple[int, str]],
+    *,
+    shared_secret: str | None,
+    authorization: str | None,
+    timeout_seconds: float,
+) -> tuple[int, str, str]:
+    import urllib.error
+
+    last_error: BaseException | None = None
+    for url in urls:
+        try:
+            status, body = post_json(
+                url,
+                payload,
+                shared_secret=shared_secret,
+                authorization=authorization,
+                timeout_seconds=timeout_seconds,
+            )
+            return status, body, url
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if is_dns_resolution_error(exc):
+                print(f"WARN: DNS failed for {url}, trying next URL...", file=sys.stderr)
+                continue
+            raise
+    if last_error is not None:
+        print_dns_resolution_hint(urls[0] if urls else "")
+        raise last_error
+    raise SystemExit("No webhook URL configured")
+
+
+def post_schedule_triggers(
+    schedules: list[str],
+    *,
+    fallback_url: str | None,
+    post_json: Callable[..., tuple[int, str]],
+    channel_id: str | None,
+    trigger: str,
+    skip_if_posted: bool,
+    timeout_seconds: float,
+) -> int:
+    base_candidates = webhook_url_candidates()
+    if fallback_url and fallback_url not in base_candidates:
+        base_candidates.insert(0, fallback_url)
+    if not base_candidates:
+        raise SystemExit("N8N_WEBHOOK_URL is required (or set N8N_USE_LOCAL=true for localhost n8n)")
+
+    shared_secret = os.getenv("N8N_SHARED_SECRET")
+    authorization = os.getenv("N8N_AUTHORIZATION")
+    failures = 0
+
+    for schedule in schedules:
+        override = schedule_webhook_url(schedule, fallback_url=base_candidates[0])
+        if os.getenv(SCHEDULE_WEBHOOK_ENV.get(schedule, ""), "").strip():
+            urls = [override, *base_candidates]
+        else:
+            urls = base_candidates
+
+        payload = build_run_schedule_payload(
+            schedule,
+            channel_id=channel_id,
+            trigger=trigger,
+            skip_if_posted=skip_if_posted,
+        )
+        label = SCHEDULE_LABELS_KO.get(schedule, schedule)
+        print(f"\n--- trigger {schedule} ({label}) ---")
+        try:
+            status, body, url_used = post_json_try_urls(
+                urls,
+                payload,
+                post_json,
+                shared_secret=shared_secret,
+                authorization=authorization,
+                timeout_seconds=timeout_seconds,
+            )
+        except urllib.error.URLError:
+            failures += 1
+            continue
+        print(f"webhook: {url_used}")
+        print("action: run_schedule")
+        print(f"status: {status}")
+        print(f"body: {body[:500]}")
+        if 200 <= status < 300:
+            if webhook_response_likely_noop(status, body):
+                print(
+                    f"WARN: {schedule} returned HTTP 200 but response looks like a "
+                    "webhook echo only — n8n may lack action=run_schedule branch.",
+                    file=sys.stderr,
+                )
+                failures += 1
+            else:
+                print(f"OK: {schedule} trigger accepted (check n8n Executions for actual post).")
+        else:
+            print(f"FAIL: {schedule} trigger rejected.", file=sys.stderr)
+            failures += 1
+        time.sleep(0.3)
+
+    if failures:
+        print(
+            f"\n{failures}/{len(schedules)} triggers failed or likely no-ops.",
+            file=sys.stderr,
+        )
+        print(
+            "Fix n8n Webhook → Switch on action=run_schedule. "
+            "See docs/n8n-run-schedule-workflow.md",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        "\nAll triggers returned HTTP 2xx with actionable responses. "
+        "If Slack still empty, check n8n Executions for workflow errors."
+    )
+    return 0
+
+
+def diagnose_schedules(
+    *,
+    fallback_url: str,
+    post_json: Callable[..., tuple[int, str]],
+    timeout_seconds: float,
+) -> int:
+    if not fallback_url:
+        raise SystemExit("N8N_WEBHOOK_URL is required")
+
+    print("=== n8n card-news diagnose ===\n")
+    print(f"default webhook: {fallback_url}")
+    for schedule, env_name in SCHEDULE_WEBHOOK_ENV.items():
+        override = os.getenv(env_name, "").strip()
+        if override:
+            print(f"  {schedule}: {override} (from {env_name})")
+        else:
+            print(f"  {schedule}: (uses default webhook)")
+
+    shared_secret = os.getenv("N8N_SHARED_SECRET")
+    authorization = os.getenv("N8N_AUTHORIZATION")
+
+    ping = {
+        "source": "cursor",
+        "gateway": "sync-n8n",
+        "action": "ping",
+        "received_at": int(time.time()),
+    }
+    status, body = post_json(
+        fallback_url,
+        ping,
+        shared_secret=shared_secret,
+        authorization=authorization,
+        timeout_seconds=timeout_seconds,
+    )
+    print(f"\nping status: {status} body: {body[:200]}")
+
+    print("\n--- per-schedule run_schedule probe ---")
+    print("(HTTP 200 only means webhook received — not that Slack posted)\n")
+
+    issues: list[str] = []
+    for schedule in DEFAULT_CATCHUP_SCHEDULES:
+        url = schedule_webhook_url(schedule, fallback_url=fallback_url)
+        payload = build_run_schedule_payload(schedule, channel_id=None, trigger="diagnose")
+        status, body = post_json(
+            url,
+            payload,
+            shared_secret=shared_secret,
+            authorization=authorization,
+            timeout_seconds=timeout_seconds,
+        )
+        label = SCHEDULE_LABELS_KO.get(schedule, schedule)
+        ok = 200 <= status < 300
+        mark = "OK" if ok else "FAIL"
+        print(f"[{mark}] {schedule:14} ({label}) status={status}")
+        if not ok:
+            issues.append(f"{schedule}: HTTP {status}")
+
+    print("\n=== likely cause when weather OK but news/schedule missing ===")
+    print("1. Weather uses its own Schedule Trigger workflow (works).")
+    print("2. News/regular use OTHER workflows — cron missed or workflow inactive/failed.")
+    print("3. card_news_catchup / run_schedule branches may NOT exist on this webhook.")
+    print("   → webhook returns 200 but n8n does nothing after Webhook node.")
+    print("4. Fix: n8n Executions tab → find news/regular workflow errors.")
+    print("   Add IF/Switch on action=run_schedule — see docs/n8n-run-schedule-workflow.md")
+
+    if issues:
+        print(f"\nHTTP failures: {', '.join(issues)}", file=sys.stderr)
+        return 1
+    return 0
