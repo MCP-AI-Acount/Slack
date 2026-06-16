@@ -121,7 +121,7 @@ WAIT_FLAG="$(_evening_wait_flag)"
 
 if [[ -z "$AUTO_ROOT" ]]; then
   echo "[fail] MCP-Auto not found — expected ~/MCP-Auto/EXE/run_topic_news_evening_batch.sh" >&2
-  echo "  curl -fsSL https://raw.githubusercontent.com/MCP-AI-Acount/Slack/main/scripts/fetch_evening_vm.sh | bash -s -- --no-wait" >&2
+echo "  curl -fsSL https://raw.githubusercontent.com/MCP-AI-Acount/Slack/master/scripts/fetch_evening_vm.sh | bash -s -- --no-wait" >&2
   exit 1
 fi
 
