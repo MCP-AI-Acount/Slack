@@ -246,6 +246,53 @@ def cmd_afternoon(args: argparse.Namespace) -> int:
     return cmd_trigger(argparse.Namespace(only=",".join(schedules)))
 
 
+def cmd_evening(args: argparse.Namespace) -> int:
+    schedules = ["daily"]
+    if args.only:
+        schedules = [part.strip().lower() for part in args.only.split(",") if part.strip()]
+    print(f"evening recovery: {', '.join(schedules)}")
+    return _cmd_trigger_schedules(schedules, force=args.force)
+
+
+def _cmd_trigger_schedules(schedules: list[str], *, force: bool) -> int:
+    urls = webhook_url_candidates()
+    if not urls:
+        raise SystemExit("Set N8N_WEBHOOK_URL or N8N_USE_LOCAL=true")
+    print(f"Webhook candidates: {urls[0]}" + (f" (+{len(urls)-1} fallback)" if len(urls) > 1 else ""))
+
+    timeout = float(os.getenv("N8N_FORWARD_TIMEOUT_SECONDS", "30"))
+    failures = 0
+    for schedule in schedules:
+        env_name = SCHEDULE_WEBHOOK_ENV.get(schedule, "")
+        override = os.getenv(env_name, "").strip() if env_name else ""
+        try_urls = [override, *urls] if override else urls
+
+        payload = build_run_schedule_payload(schedule)
+        payload["run"]["skip_if_posted"] = not force
+        payload["run"]["force"] = force
+        label = SCHEDULE_LABELS_KO.get(schedule, schedule)
+        print(f"\n--- {schedule} ({label}) ---")
+        try:
+            status, body, url_used = post_json_try_urls(try_urls, payload, timeout=timeout)
+        except urllib.error.URLError:
+            failures += 1
+            continue
+        print(f"webhook: {url_used}")
+        print(f"status: {status} body: {body[:300]}")
+        if not (200 <= status < 300) or webhook_response_likely_noop(status, body):
+            if 200 <= status < 300:
+                print(
+                    f"WARN: {schedule} HTTP 200 but likely no run_schedule branch in n8n.",
+                    file=sys.stderr,
+                )
+            failures += 1
+    if failures:
+        print(f"\n{failures} failed.", file=sys.stderr)
+        return 1
+    print("\nHTTP OK — if Slack still empty, fix n8n run_schedule branch.")
+    return 0
+
+
 def cmd_startup(_: argparse.Namespace) -> int:
     return cmd_trigger(argparse.Namespace(only=",".join(missing_content_schedules())))
 
@@ -257,6 +304,10 @@ def main() -> int:
     afternoon_parser = sub.add_parser("afternoon", help="Recover missed afternoon regular schedule (KST)")
     afternoon_parser.add_argument("--only", default=None)
     afternoon_parser.set_defaults(func=cmd_afternoon)
+    evening_parser = sub.add_parser("evening", help="Recover 18:00 KST daily/topic batch")
+    evening_parser.add_argument("--only", default=None, help="Default: daily")
+    evening_parser.add_argument("--force", action="store_true", help="Post even if already posted today.")
+    evening_parser.set_defaults(func=cmd_evening)
     trigger_parser = sub.add_parser("trigger", help="Trigger specific schedules")
     trigger_parser.add_argument("--only", default=None)
     trigger_parser.set_defaults(func=cmd_trigger)

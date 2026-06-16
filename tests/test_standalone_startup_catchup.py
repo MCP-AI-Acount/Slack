@@ -38,6 +38,11 @@ class StandaloneStartupCatchupTests(unittest.TestCase):
             schedules = afternoon_recovery_schedules()
         self.assertIn("regular", schedules)
 
+    def test_evening_payload_daily(self) -> None:
+        payload = build_run_schedule_payload("daily")
+        self.assertEqual(payload["action"], "run_schedule")
+        self.assertEqual(payload["schedule"], "daily")
+
 
 if __name__ == "__main__":
     unittest.main()
