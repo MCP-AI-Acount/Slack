@@ -9,6 +9,10 @@
 #
 # 진단:
 #   curl -fsSL ".../fetch_and_run.sh" | bash -s diagnose
+#
+# 저녁 토픽 뉴스(18시 KST, tech/culture/health) — 맥 슬립 시 VM에서:
+#   MCP-Auto: bash EXE/sync_topic_news_evening_vm.sh --no-wait
+#   → docs/vm-evening-news-ko.md
 set -euo pipefail
 
 RAW_BASE="${SLACK_RAW_BASE:-https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/card-schedule-afternoon-fix-73c1/scripts}"

@@ -177,6 +177,25 @@ def cmd_trigger(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_evening(args: argparse.Namespace) -> int:
+    """Trigger daily/evening slot (18:00 KST card-news schedule key: daily)."""
+    schedules = parse_schedules(args.only, default=["daily"])
+    print(
+        "evening: for topic tech/culture/health batch use MCP-Auto "
+        "EXE/sync_topic_news_evening_vm.sh on the worker VM"
+    )
+    timeout = float(os.getenv("N8N_FORWARD_TIMEOUT_SECONDS", "30"))
+    return post_schedule_triggers(
+        schedules,
+        fallback_url=webhook_url(),
+        post_json=post_json,
+        channel_id=args.channel_id,
+        trigger="evening_recovery",
+        skip_if_posted=not args.force,
+        timeout_seconds=timeout,
+    )
+
+
 def cmd_afternoon(args: argparse.Namespace) -> int:
     schedules = afternoon_recovery_schedules()
     if args.only:
@@ -298,6 +317,15 @@ def main() -> int:
     trigger_parser.add_argument("--channel-id", dest="channel_id", default=None)
     trigger_parser.add_argument("--force", action="store_true", help="Post even if already posted today.")
     trigger_parser.set_defaults(func=cmd_trigger)
+
+    evening_parser = sub.add_parser(
+        "evening",
+        help="Recover 18:00 KST daily slot via n8n run_schedule (topic batch: see docs/vm-evening-news-ko.md).",
+    )
+    evening_parser.add_argument("--only", default="daily", help="Default: daily (18:00 KST).")
+    evening_parser.add_argument("--channel-id", dest="channel_id", default=None)
+    evening_parser.add_argument("--force", action="store_true", help="Post even if already posted today.")
+    evening_parser.set_defaults(func=cmd_evening)
 
     afternoon_parser = sub.add_parser(
         "afternoon",
