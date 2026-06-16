@@ -4,6 +4,7 @@
 #   curl -fsSL "https://raw.githubusercontent.com/MCP-AI-Acount/Slack/main/scripts/fetch_evening_vm.sh" | bash -s -- --no-wait
 #
 # MCP-Auto가 ~/MCP-Auto 에 있으면 repo 스크립트를 우선 사용합니다.
+# 없으면 Slack standalone 배치(n8n daily 트리거)로 폴백합니다.
 set -euo pipefail
 
 HOME_SCRIPT="${HOME}/sync_topic_news_evening_vm.sh"

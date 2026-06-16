@@ -27,13 +27,39 @@ for f in "$AGENT_SECRETS" "$ENVF"; do
   fi
 done
 
-_resolve_mcp_auto_root() {
-  local candidate
-  for candidate in "${VM_MCP_AUTO_ROOT:-}" "$_AUTO_ROOT" "$HOME/MCP-Auto" "$HOME/Documents/MCP-Auto"; do
+_resolve_evening_batch_script() {
+  local candidate script
+  for candidate in "${VM_MCP_AUTO_ROOT:-}" "$_AUTO_ROOT" "$HOME/MCP-Auto" "$HOME/Documents/MCP-Auto" "$_BIN"; do
     [[ -z "$candidate" ]] && continue
     candidate="${candidate/#\~/$HOME}"
-    if [[ -f "$candidate/EXE/run_topic_news_evening_batch.sh" ]]; then
-      printf '%s\n' "$candidate"
+    for script in \
+      "$candidate/EXE/run_topic_news_evening_batch.sh" \
+      "$candidate/run_topic_news_evening_batch.sh"; do
+      if [[ -f "$script" ]]; then
+        printf '%s\n' "$script"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+_ensure_standalone_batch_script() {
+  local dest="${HOME}/.local/bin/run_topic_news_evening_batch.sh"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f "$_BIN/run_topic_news_evening_batch.sh" ]]; then
+    cp "$_BIN/run_topic_news_evening_batch.sh" "$dest"
+    chmod +x "$dest"
+    printf '%s\n' "$dest"
+    return 0
+  fi
+  local ref url
+  for ref in ${SLACK_RAW_REFS:-master main}; do
+    url="${SLACK_RAW_BASE:-https://raw.githubusercontent.com/MCP-AI-Acount/Slack}/${ref}/scripts/run_topic_news_evening_batch.sh"
+    if curl -fsSL "$url" -o "$dest" 2>/dev/null; then
+      chmod +x "$dest"
+      echo "[sync-evening] fetched run_topic_news_evening_batch.sh (ref=${ref})"
+      printf '%s\n' "$dest"
       return 0
     fi
   done
@@ -75,20 +101,25 @@ _evening_wait_flag() {
   printf '%s' "$flag"
 }
 
-_run_evening_on_vm() {
-  local auto_root="$1"
+_run_evening_batch() {
+  local batch_script="$1"
   local wait_flag="$2"
-  echo "[sync-evening] on-vm auto_root=${auto_root} (${wait_flag:-wait-until-18:00})"
-  _ensure_home_shortcut "$auto_root/EXE/sync_topic_news_evening_vm.sh"
-  if [[ -f "$auto_root/EXE/vm_boot_services.sh" ]]; then
-    DAILY_OPS_RESET_ON_BOOT=0 bash "$auto_root/EXE/vm_boot_services.sh" || true
-  fi
+  echo "[sync-evening] batch=${batch_script} (${wait_flag:-wait-until-18:00})"
+  _ensure_home_shortcut "$_BIN/sync_topic_news_evening_vm.sh"
+  local batch_dir boot
+  batch_dir="$(cd "$(dirname "$batch_script")" && pwd)"
+  for boot in "$batch_dir/vm_boot_services.sh" "$(dirname "$batch_dir")/EXE/vm_boot_services.sh"; do
+    if [[ -f "$boot" ]]; then
+      DAILY_OPS_RESET_ON_BOOT=0 bash "$boot" || true
+      break
+    fi
+  done
   # shellcheck disable=SC2086
-  bash "$auto_root/EXE/run_topic_news_evening_batch.sh" $wait_flag "${EXTRA_ARGS[@]}"
+  bash "$batch_script" $wait_flag "${EXTRA_ARGS[@]}"
 }
 
 _run_evening_via_gcloud() {
-  local auto_root="$1"
+  local batch_script="$1"
   local wait_flag="$2"
   # shellcheck disable=SC1091
   source "$_BIN/gcp_project_env.sh"
@@ -108,7 +139,7 @@ _run_evening_via_gcloud() {
   local remote_cmd="set -euo pipefail
 export ENVF=~/n8n-secrets.env
 if [[ -f ~/n8n-secrets.env ]]; then set -a; source ~/n8n-secrets.env; set +a; fi
-bash ${VM_REPO}/EXE/sync_topic_news_evening_vm.sh ${wait_flag}"
+curl -fsSL https://raw.githubusercontent.com/MCP-AI-Acount/Slack/master/scripts/fetch_evening_vm.sh | bash -s -- ${wait_flag}"
   if ((${#EXTRA_ARGS[@]})); then
     remote_cmd+=" $(printf '%q ' "${EXTRA_ARGS[@]}")"
   fi
@@ -116,21 +147,21 @@ bash ${VM_REPO}/EXE/sync_topic_news_evening_vm.sh ${wait_flag}"
   gcloud compute ssh "$VM_NAME" --zone "$ZONE" --project "$PROJECT_ID" --command="${remote_cmd}"
 }
 
-AUTO_ROOT="$(_resolve_mcp_auto_root || true)"
+BATCH_SCRIPT="$(_resolve_evening_batch_script || _ensure_standalone_batch_script || true)"
 WAIT_FLAG="$(_evening_wait_flag)"
 
-if [[ -z "$AUTO_ROOT" ]]; then
-  echo "[fail] MCP-Auto not found — expected ~/MCP-Auto/EXE/run_topic_news_evening_batch.sh" >&2
-echo "  curl -fsSL https://raw.githubusercontent.com/MCP-AI-Acount/Slack/master/scripts/fetch_evening_vm.sh | bash -s -- --no-wait" >&2
+if [[ -z "$BATCH_SCRIPT" ]]; then
+  echo "[fail] could not find or download run_topic_news_evening_batch.sh" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/MCP-AI-Acount/Slack/master/scripts/fetch_evening_vm.sh | bash -s -- --no-wait" >&2
   exit 1
 fi
 
 if _on_gcp_vm; then
-  _run_evening_on_vm "$AUTO_ROOT" "$WAIT_FLAG"
+  _run_evening_batch "$BATCH_SCRIPT" "$WAIT_FLAG"
 elif command -v gcloud >/dev/null 2>&1; then
-  _run_evening_via_gcloud "$AUTO_ROOT" "$WAIT_FLAG"
+  _run_evening_via_gcloud "$BATCH_SCRIPT" "$WAIT_FLAG"
 else
-  _run_evening_on_vm "$AUTO_ROOT" "$WAIT_FLAG"
+  _run_evening_batch "$BATCH_SCRIPT" "$WAIT_FLAG"
 fi
 
 echo "[sync-evening] done"
