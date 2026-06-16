@@ -10,8 +10,8 @@
 # 진단:
 #   curl -fsSL ".../fetch_and_run.sh" | bash -s diagnose
 #
-# 저녁 토픽 뉴스(18시 KST, tech/culture/health) — 맥 슬립 시 VM에서:
-#   MCP-Auto: bash EXE/sync_topic_news_evening_vm.sh --no-wait
+# 저녁 토픽 뉴스(18시 KST) — VM 홈에서:
+#   bash ~/sync_topic_news_evening_vm.sh --no-wait
 #   → docs/vm-evening-news-ko.md
 set -euo pipefail
 

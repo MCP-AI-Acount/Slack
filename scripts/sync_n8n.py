@@ -181,8 +181,8 @@ def cmd_evening(args: argparse.Namespace) -> int:
     """Trigger daily/evening slot (18:00 KST card-news schedule key: daily)."""
     schedules = parse_schedules(args.only, default=["daily"])
     print(
-        "evening: for topic tech/culture/health batch use MCP-Auto "
-        "EXE/sync_topic_news_evening_vm.sh on the worker VM"
+        "evening: on mcp-auto-worker run: bash ~/sync_topic_news_evening_vm.sh --no-wait "
+        "(or MCP-Auto/EXE/sync_topic_news_evening_vm.sh)"
     )
     timeout = float(os.getenv("N8N_FORWARD_TIMEOUT_SECONDS", "30"))
     return post_schedule_triggers(
