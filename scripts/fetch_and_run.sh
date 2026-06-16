@@ -10,9 +10,9 @@
 # 진단:
 #   curl -fsSL ".../fetch_and_run.sh" | bash -s diagnose
 #
-# 저녁 토픽 뉴스(18시 KST) — VM 홈에서:
-#   bash ~/sync_topic_news_evening_vm.sh --no-wait
-#   → docs/vm-evening-news-ko.md
+# 저녁 토픽 뉴스(18시 KST) — VM:
+#   bash ~/MCP-Auto/EXE/run_topic_news_evening_batch.sh --no-wait
+#   또는 curl -fsSL .../Slack/main/scripts/fetch_evening_vm.sh | bash -s -- --no-wait
 set -euo pipefail
 
 RAW_BASE="${SLACK_RAW_BASE:-https://raw.githubusercontent.com/MCP-AI-Acount/Slack/cursor/card-schedule-afternoon-fix-73c1/scripts}"
