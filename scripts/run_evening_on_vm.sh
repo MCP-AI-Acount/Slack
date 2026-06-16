@@ -17,5 +17,5 @@ for root in "${VM_MCP_AUTO_ROOT:-}" "$HOME/MCP-Auto" "$HOME/Documents/MCP-Auto";
 done
 
 echo "[fail] ~/MCP-Auto/EXE/run_topic_news_evening_batch.sh not found" >&2
-echo "  Or install: curl -fsSL https://raw.githubusercontent.com/MCP-AI-Acount/Slack/main/scripts/fetch_evening_vm.sh | bash -s -- --no-wait" >&2
+echo "  Or install: curl -fsSL https://raw.githubusercontent.com/MCP-AI-Acount/Slack/master/scripts/fetch_evening_vm.sh | bash -s -- --no-wait" >&2
 exit 1

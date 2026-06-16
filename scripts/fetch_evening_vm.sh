@@ -8,7 +8,24 @@ set -euo pipefail
 
 HOME_SCRIPT="${HOME}/sync_topic_news_evening_vm.sh"
 MCP_SCRIPT="${HOME}/MCP-Auto/EXE/sync_topic_news_evening_vm.sh"
-SLACK_RAW_BASE="${SLACK_RAW_BASE:-https://raw.githubusercontent.com/MCP-AI-Acount/Slack/main/scripts}"
+SLACK_RAW_BASE="${SLACK_RAW_BASE:-https://raw.githubusercontent.com/MCP-AI-Acount/Slack}"
+SLACK_RAW_REFS="${SLACK_RAW_REFS:-main master}"
+
+_download_script() {
+  local dest="$1"
+  local name="$2"
+  local ref url
+  for ref in $SLACK_RAW_REFS; do
+    url="${SLACK_RAW_BASE}/${ref}/scripts/${name}"
+    if curl -fsSL "$url" -o "$dest" 2>/dev/null; then
+      echo ">>> fetched ${name} (ref=${ref})"
+      return 0
+    fi
+  done
+  echo "[fail] could not download ${name} (tried refs: ${SLACK_RAW_REFS})" >&2
+  echo "  MCP-Auto raw URLs are private (404). Use Slack refs above." >&2
+  return 1
+}
 
 if [[ -f "$MCP_SCRIPT" ]]; then
   exec bash "$MCP_SCRIPT" "$@"
@@ -19,13 +36,6 @@ if [[ -f "$HOME_SCRIPT" ]]; then
 fi
 
 echo ">>> downloading ${HOME_SCRIPT} (Slack public repo)"
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "${SLACK_RAW_BASE}/sync_topic_news_evening_vm.sh" -o "${HOME_SCRIPT}"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "${HOME_SCRIPT}" "${SLACK_RAW_BASE}/sync_topic_news_evening_vm.sh"
-else
-  echo "[fail] curl or wget required" >&2
-  exit 1
-fi
+_download_script "${HOME_SCRIPT}" "sync_topic_news_evening_vm.sh"
 chmod +x "${HOME_SCRIPT}"
 exec bash "${HOME_SCRIPT}" "$@"
